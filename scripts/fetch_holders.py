@@ -41,7 +41,7 @@ from config import (
 from db.schema import init_db, get_connection
 from chain.rpc import latest_block
 from chain.classify import classify, KEEP_TYPES
-from chain.blockscout import address_info, token_holders
+from chain.blockscout import metadata_labels, token_holders
 from chain.insiders import group_safes, suggest_insider_sources, trace_funding
 from chain.positions import POSITION_SOURCES, holdings, position_participants
 
@@ -248,9 +248,10 @@ def add_position_candidates(symbol: str, token: dict, rows: list[dict],
     floor = sum(ranked[-1][1].values()) / scale if len(ranked) == POSITION_CANDIDATE_LIMIT else 0.0
     seen = {r["holder_address"] for r in rows}
     new = [addr for addr, _ in ranked if addr not in seen]
-    print(f"  Adding {len(new)} staked-position holders (labels from Blockscout)...")
+    print(f"  Adding {len(new)} staked-position holders (labels from Blockscout metadata)...")
+    labels = metadata_labels(new)
     for addr in new:
-        rows.append({"holder_address": addr, "balance": None, "labels": address_info(addr)["labels"]})
+        rows.append({"holder_address": addr, "balance": None, "labels": labels[addr]})
     return rows, floor
 
 

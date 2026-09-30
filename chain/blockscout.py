@@ -140,13 +140,32 @@ def first_inflows(token: str, address: str, n: int = 1, max_pages: int = 10) -> 
         nxt = data.get("next_page_params")
         if not nxt:
             oldest = list(reversed(items))[:n]
-            return [{"from": t["from"]["hash"].lower(), "value": int(t["total"]["value"]),
+            return [{"from": t["from"]["hash"].lower(), "from_labels": address_labels(t["from"]),
+                     "value": int(t["total"]["value"]),
                      "block": t["block_number"], "timestamp": t["timestamp"]} for t in oldest]
         params = {**base, **nxt}
     raise TooManyTransfers(address)
 
 
+METADATA_URL = "https://metadata.services.blockscout.com/api/v1/metadata"
+
+
+def metadata_labels(addresses: list[str], chain_id: int = 1) -> dict[str, list[str]]:
+    """
+    Public tag names per address from Blockscout's metadata service (the source of the
+    labels embedded in holder/transfer lists). The single-address endpoint omits them.
+    """
+    out = {a.lower(): [] for a in addresses}
+    for i in range(0, len(addresses), 50):
+        chunk = addresses[i:i + 50]
+        data = _get(METADATA_URL, {"addresses": ",".join(chunk), "chainId": chain_id})
+        for addr, entry in (data.get("addresses") or {}).items():
+            out[addr.lower()] = [t["name"] for t in entry.get("tags", []) if t.get("name")]
+    return out
+
+
 def address_info(address: str) -> dict:
-    """{is_contract, labels} for one address."""
+    """{is_contract, labels} for one address — labels include public metadata tags."""
     data = _get(f"{BLOCKSCOUT_BASE_URL}/addresses/{address}")
-    return {"is_contract": bool(data.get("is_contract")), "labels": address_labels(data)}
+    labels = address_labels(data) + metadata_labels([address])[address.lower()]
+    return {"is_contract": bool(data.get("is_contract")), "labels": list(dict.fromkeys(labels))}

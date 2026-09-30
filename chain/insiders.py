@@ -54,7 +54,8 @@ def trace_funding(symbol: str, token: dict, h: dict) -> None:
         return
     if funder == "0x" + "0" * 40:
         return   # minted directly — not insider evidence on its own (e.g. SKY conversions)
-    label = insider_label(_funder_info(funder)["labels"])
+    # Transfer records carry the funder's public tags; fall back to a lookup if absent
+    label = insider_label(inflows[0].get("from_labels") or []) or insider_label(_funder_info(funder)["labels"])
     if label:
         h["insider_reason"] = f"first {symbol} received from '{label}' ({_short(funder)})"
 
