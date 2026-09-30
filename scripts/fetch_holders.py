@@ -29,7 +29,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     DUNE_API_KEY,
     DUNE_BASE_URL,
-    BLOCKSCOUT_BASE_URL,
     HOLDER_SOURCE,
     EXCLUDE_LABEL_KEYWORDS,
     TOKEN_BASKET,
@@ -37,10 +36,14 @@ from config import (
     TOP_HOLDER_COHORT_SIZE,
     KNOWN_EXCLUSIONS,
     BALANCE_MISMATCH_TOLERANCE,
+    POSITION_CANDIDATE_LIMIT,
 )
 from db.schema import init_db, get_connection
-from chain.rpc import balances_of, latest_block
+from chain.rpc import latest_block
 from chain.classify import classify, KEEP_TYPES
+from chain.blockscout import address_info, token_holders
+from chain.insiders import group_safes, suggest_insider_sources, trace_funding
+from chain.positions import POSITION_SOURCES, holdings, position_participants
 
 
 # ---------------------------------------------------------------------------
@@ -213,44 +216,14 @@ def fetch_top_holders_from_dune(symbol: str, token: dict) -> list[dict]:
 # Blockscout holder source (free, no key)
 # ---------------------------------------------------------------------------
 
-def _blockscout_labels(address: dict) -> list[str]:
-    labels = [t.get("name") for t in ((address.get("metadata") or {}).get("tags") or [])]
-    labels += [t.get("display_name") for t in address.get("public_tags") or []]
-    if address.get("name"):
-        labels.append(address["name"])   # contract name, e.g. "GnosisSafeProxy"
-    return [l for l in labels if l]
-
-
 def fetch_top_holders_from_blockscout(symbol: str, token: dict) -> list[dict]:
     """
-    Page through Blockscout's token holder list (sorted by current balance, 50/page).
+    Top holders by current wallet balance.
     Each row: {holder_address: str, balance: float, labels: list[str]}
     """
-    url = f"{BLOCKSCOUT_BASE_URL}/tokens/{token['contract']}/holders"
     scale = 10 ** token["decimals"]
-    rows, params = [], {}
-    while len(rows) < TOP_HOLDER_RAW_LIMIT:
-        for attempt in range(3):
-            try:
-                resp = requests.get(url, params=params, timeout=30)
-                resp.raise_for_status()
-                break
-            except requests.RequestException:
-                if attempt == 2:
-                    raise
-                time.sleep(2 ** attempt)
-        data = resp.json()
-        for item in data["items"]:
-            rows.append({
-                "holder_address": item["address"]["hash"].lower(),
-                "balance": int(item["value"]) / scale,
-                "labels": _blockscout_labels(item["address"]),
-            })
-        params = data.get("next_page_params")
-        if not params:
-            break
-        time.sleep(0.5)
-    rows = rows[:TOP_HOLDER_RAW_LIMIT]
+    rows = [{"holder_address": r["address"], "balance": r["value"] / scale, "labels": r["labels"]}
+            for r in token_holders(token["contract"], TOP_HOLDER_RAW_LIMIT)]
     print(f"  Blockscout returned {len(rows)} raw rows")
     return rows
 
@@ -259,6 +232,26 @@ def fetch_top_holders(symbol: str, token: dict) -> list[dict]:
     if HOLDER_SOURCE == "blockscout":
         return fetch_top_holders_from_blockscout(symbol, token)
     return fetch_top_holders_from_dune(symbol, token)
+
+
+def add_position_candidates(symbol: str, token: dict, rows: list[dict],
+                            positions: dict[str, dict[str, int]]) -> tuple[list[dict], float]:
+    """
+    Append the largest staked-position holders that aren't already in the wallet list.
+    Returns (rows, position_floor) where position_floor is the smallest position
+    considered — used by the completeness check.
+    """
+    if not positions:
+        return rows, 0.0
+    scale = 10 ** token["decimals"]
+    ranked = sorted(positions.items(), key=lambda kv: -sum(kv[1].values()))[:POSITION_CANDIDATE_LIMIT]
+    floor = sum(ranked[-1][1].values()) / scale if len(ranked) == POSITION_CANDIDATE_LIMIT else 0.0
+    seen = {r["holder_address"] for r in rows}
+    new = [addr for addr, _ in ranked if addr not in seen]
+    print(f"  Adding {len(new)} staked-position holders (labels from Blockscout)...")
+    for addr in new:
+        rows.append({"holder_address": addr, "balance": None, "labels": address_info(addr)["labels"]})
+    return rows, floor
 
 
 # ---------------------------------------------------------------------------
@@ -284,23 +277,28 @@ def _preview(entries: list[dict]) -> str:
     return f"  ({', '.join(h['holder_address'][:10] + '…' for h in entries[:3])}{more})"
 
 
-def apply_exclusion_filter(rows: list[dict], symbol: str, token: dict) -> list[dict]:
+def apply_exclusion_filter(rows: list[dict], symbol: str, token: dict,
+                           positions: dict[str, dict[str, int]] | None = None,
+                           position_floor: float = 0.0) -> tuple[list[dict], list[dict]]:
     """
-    Four-stage filter with funnel output:
-      1. Drop KNOWN_EXCLUSIONS, and any address whose public labels match
-         EXCLUDE_LABEL_KEYWORDS (exchange, team-supply and treasury wallets)
+    Five-stage filter with funnel output. Returns (whales, insiders).
+      1. Drop KNOWN_EXCLUSIONS and exchange wallets (labels match EXCLUDE_LABEL_KEYWORDS)
       2. Classify by bytecode: keep EOAs, EIP-7702 EOAs and Safes; drop other contracts
-      3. Verify balances with balanceOf() at one pinned block; drop phantom (zero) balances
-         and re-rank by the on-chain balance, which is the source of truth
-      4. Keep top N of what remains
+      3. Verify holdings on-chain at one pinned block — balanceOf() plus staked positions
+         (chain/positions.py); drop zero holdings and re-rank by the on-chain total
+      4. Trace funding in rank order and split out insiders (chain/insiders.py),
+         until TOP_HOLDER_COHORT_SIZE whales are found
+      5. Whales = top N non-insiders; insiders ranked above the last whale are kept separately
     Any RPC failure raises — a partial check must never pass contracts through.
     """
-    # Stage 1: known addresses and public-label exclusions
+    positions = positions or {}
+
+    # Stage 1: known addresses and exchange labels
     after_labels, dropped_labels, dropped_tagged = [], [], []
     for rank, row in enumerate(rows, start=1):
         addr = row["holder_address"].lower()
-        entry = {"holder_address": addr, "rank": rank, "source_balance": row["balance"],
-                 "labels": row.get("labels") or []}
+        entry = {"holder_address": addr, "rank": rank if row["balance"] is not None else None,
+                 "source_balance": row["balance"], "labels": row.get("labels") or []}
         if addr in _EXCLUSION_SET:
             dropped_labels.append(entry)
         elif _excluded_by_label(entry["labels"]):
@@ -316,35 +314,57 @@ def apply_exclusion_filter(rows: list[dict], symbol: str, token: dict) -> list[d
         h["wallet_type"] = types[h["holder_address"]]
         (after_types if h["wallet_type"] in KEEP_TYPES else dropped_contracts).append(h)
 
-    # Stage 3: on-chain balance verification
+    # Stage 3: on-chain holdings (wallet + staked positions)
     block = latest_block()
-    print(f"  Verifying {len(after_types)} balances with balanceOf() at block {block}...")
-    scale = 10 ** token["decimals"]
-    chain = balances_of(token["contract"], [h["holder_address"] for h in after_types], block)
+    print(f"  Verifying {len(after_types)} holdings on-chain at block {block}...")
+    held = holdings(symbol, token, [h["holder_address"] for h in after_types], block, positions)
     verified, phantoms, mismatched = [], [], []
     for h in after_types:
-        h["balance"] = chain[h["holder_address"]] / scale
-        h["verified_block"] = block
+        x = held[h["holder_address"]]
+        h.update(wallet_balance=x["wallet"], positions=x["positions"], balance=x["total"],
+                 verified_block=block)
         if h["balance"] <= 0:
             phantoms.append(h)
             continue
-        if abs(h["source_balance"] - h["balance"]) / h["balance"] > BALANCE_MISMATCH_TOLERANCE:
+        src = h["source_balance"]
+        if src is not None and x["wallet"] > 0 and abs(src - x["wallet"]) / x["wallet"] > BALANCE_MISMATCH_TOLERANCE:
             mismatched.append(h)
         verified.append(h)
     verified.sort(key=lambda h: h["balance"], reverse=True)
 
-    # Stage 4: cap to cohort size
-    cohort = verified[:TOP_HOLDER_COHORT_SIZE]
+    # Stage 4: insider tracing, in rank order, until the whale cohort is full
+    print(f"  Tracing first-inflow funding to separate insiders...")
+    traced: list[dict] = []
+    whales: list[dict] = []
+    i = 0
+    while len(whales) < TOP_HOLDER_COHORT_SIZE and i < len(verified):
+        batch_ = verified[i:i + 10]
+        i += len(batch_)
+        for h in batch_:
+            trace_funding(symbol, token, h)
+            traced.append(h)
+        group_safes(traced)
+        whales = [h for h in traced if not h.get("insider_reason")]
 
-    type_counts = {}
-    for h in cohort:
+    # Stage 5: final split
+    whales = whales[:TOP_HOLDER_COHORT_SIZE]
+    cutoff = whales[-1]["balance"] if whales else 0
+    insiders = [h for h in traced if h.get("insider_reason") and h["balance"] >= cutoff]
+    for h in whales:
+        h["category"] = "whale"
+    for h in insiders:
+        h["category"] = "insider"
+
+    type_counts: dict[str, int] = {}
+    for h in whales:
         type_counts[h["wallet_type"]] = type_counts.get(h["wallet_type"], 0) + 1
+    staked = sum(1 for h in whales if h["positions"])
 
     # Funnel output
     print(f"\n  Filter funnel for {symbol}:")
-    print(f"    Raw pulled from source        : {len(rows):>4}")
+    print(f"    Raw candidates                : {len(rows):>4}")
     print(f"    Dropped — known addresses     : {len(dropped_labels):>4}{_preview(dropped_labels)}")
-    print(f"    Dropped — exchange/team labels: {len(dropped_tagged):>4}", end="")
+    print(f"    Dropped — exchange labels     : {len(dropped_tagged):>4}", end="")
     if dropped_tagged:
         tags = sorted({_excluded_by_label(h["labels"]) for h in dropped_tagged})
         print(f"  ({', '.join(tags[:4])}{'...' if len(tags) > 4 else ''})", end="")
@@ -353,26 +373,39 @@ def apply_exclusion_filter(rows: list[dict], symbol: str, token: dict) -> list[d
     print(f"    Dropped — zero on-chain       : {len(phantoms):>4}{_preview(phantoms)}")
     print(f"    Source/chain mismatch >{BALANCE_MISMATCH_TOLERANCE:.0%} (kept, chain value used): {len(mismatched)}")
     print(f"    Real wallets remaining        : {len(verified):>4}")
-    print(f"    Kept in cohort (top {TOP_HOLDER_COHORT_SIZE})       : {len(cohort):>4}  {type_counts}")
+    print(f"    Insiders split out            : {len(insiders):>4}")
+    for h in insiders[:5]:
+        print(f"      {h['holder_address'][:12]}… {h['balance']:>18,.0f}  {h['insider_reason']}")
+    print(f"    Whale cohort (top {TOP_HOLDER_COHORT_SIZE})         : {len(whales):>4}  {type_counts}"
+          + (f", {staked} with staked positions" if positions else ""))
+    entities = {h["entity_id"] for h in whales if h.get("entity_id")}
+    if entities:
+        grouped = sum(1 for h in whales if h.get("entity_id"))
+        print(f"    Safes grouped by shared signers: {grouped} whales in {len(entities)} entities")
 
     # Sources over-report (phantom balances) far more often than they under-report,
-    # so any real holder missing from the raw list holds at most the last raw balance.
-    # If our smallest cohort member beats that, nobody outside the list could displace it.
-    if cohort and rows:
-        floor = rows[-1]["balance"]
-        if cohort[-1]["balance"] >= floor:
-            print(f"    Completeness: OK (cohort min {cohort[-1]['balance']:,.2f} ≥ last raw row {floor:,.2f})")
+    # so any real holder missing from the candidate lists holds at most the last raw
+    # wallet balance plus the smallest position considered. If the smallest whale
+    # beats that, nobody outside the lists could displace it.
+    wallet_rows = [r for r in rows if r["balance"] is not None]
+    if whales and wallet_rows:
+        floor = wallet_rows[-1]["balance"] + position_floor
+        if whales[-1]["balance"] >= floor:
+            print(f"    Completeness: OK (cohort min {whales[-1]['balance']:,.2f} ≥ max unseen {floor:,.2f})")
         else:
-            print(f"\n  WARNING: cohort min {cohort[-1]['balance']:,.2f} < last raw row {floor:,.2f} — "
-                  f"real holders beyond the raw list may be missing; raise TOP_HOLDER_RAW_LIMIT")
+            print(f"\n  WARNING: cohort min {whales[-1]['balance']:,.2f} < max unseen holding {floor:,.2f} — "
+                  f"holders beyond the candidate lists may be missing; raise the limits")
 
-    if len(cohort) < TOP_HOLDER_COHORT_SIZE:
-        print(f"\n  WARNING: only {len(cohort)} clean holders found — consider increasing TOP_HOLDER_RAW_LIMIT")
+    for funder, n in suggest_insider_sources(symbol, traced):
+        print(f"  REVIEW: {funder} was the first funder of {n} top holders — possible insider source")
+
+    if len(whales) < TOP_HOLDER_COHORT_SIZE:
+        print(f"\n  WARNING: only {len(whales)} whales found — consider increasing TOP_HOLDER_RAW_LIMIT")
     if len(phantoms) + len(mismatched) > len(after_types) * 0.2:
         print(f"\n  NOTE: {len(phantoms) + len(mismatched)}/{len(after_types)} source balances for {symbol} "
-              f"were wrong and replaced with balanceOf() — the source misses a non-standard event")
+              f"were wrong and replaced with on-chain values — the source misses a non-standard event")
 
-    return cohort
+    return whales, insiders
 
 
 # ---------------------------------------------------------------------------
@@ -428,13 +461,17 @@ def replace_cohort(symbol: str, holders: list[dict]) -> None:
         con.executemany(
             """INSERT INTO holders
                (token_symbol, address, rank, balance_at_pull, wallet_type, source_balance,
-                verified_block, labels)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                verified_block, labels, wallet_balance, positions, category, insider_reason,
+                first_funder, entity_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(symbol, h["holder_address"], h["rank"], h["balance"], h["wallet_type"],
-              h["source_balance"], h["verified_block"], json.dumps(h["labels"])) for h in holders],
+              h["source_balance"], h["verified_block"], json.dumps(h["labels"]),
+              h["wallet_balance"], json.dumps(h["positions"]), h["category"],
+              h.get("insider_reason"), h.get("first_funder"), h.get("entity_id")) for h in holders],
         )
         con.commit()
-        print(f"  Wrote {len(holders)} holders to DB for {symbol}")
+        n_ins = sum(1 for h in holders if h["category"] == "insider")
+        print(f"  Wrote {len(holders) - n_ins} whales + {n_ins} insiders to DB for {symbol}")
     except sqlite3.Error as e:
         con.rollback()
         raise RuntimeError(f"DB write failed: {e}") from e
@@ -460,18 +497,28 @@ def process_token(symbol: str, token: dict, from_raw: bool, pull_id: str) -> Non
     else:
         raw_rows = fetch_top_holders(symbol, token)
         save_raw_pull(symbol, pull_id, raw_rows)
-    clean = apply_exclusion_filter(raw_rows, symbol, token)
 
-    if not clean:
-        print("  WARNING: no clean holders after filtering — broaden exclusion list or check Dune results")
+    positions = {}
+    position_floor = 0.0
+    if symbol in POSITION_SOURCES:
+        print(f"  Reading staked positions ({', '.join(s.name for s in POSITION_SOURCES[symbol])})...")
+        positions = position_participants(symbol)
+        print(f"  {len(positions)} addresses hold staked {symbol}")
+        raw_rows, position_floor = add_position_candidates(symbol, token, raw_rows, positions)
+
+    whales, insiders = apply_exclusion_filter(raw_rows, symbol, token, positions, position_floor)
+
+    if not whales:
+        print("  WARNING: no clean holders after filtering — broaden exclusion list or check source results")
         return
 
     upsert_token(symbol, token)
-    replace_cohort(symbol, clean)
+    replace_cohort(symbol, whales + insiders)
 
-    print(f"\n  Top 10 clean holders:")
-    for h in clean[:10]:
-        print(f"    #{h['rank']:>3}  {h['holder_address']}  {h['balance']:>20,.4f} {symbol}  [{h['wallet_type']}]")
+    print(f"\n  Top 10 whales:")
+    for h in whales[:10]:
+        pos = f"  (staked {sum(h['positions'].values()):,.0f})" if h["positions"] else ""
+        print(f"    {h['holder_address']}  {h['balance']:>20,.4f} {symbol}  [{h['wallet_type']}]{pos}")
 
 
 def main():

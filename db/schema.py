@@ -72,6 +72,16 @@ def init_db():
             UNIQUE(token_symbol, address, block_number)
         );
 
+        -- Staking positions (e.g. SKY lockstake urns), cached from Open events.
+        CREATE TABLE IF NOT EXISTS position_urns (
+            source          TEXT NOT NULL,        -- position source name, e.g. lockstake
+            owner           TEXT NOT NULL,
+            idx             INTEGER NOT NULL,
+            urn             TEXT NOT NULL,
+            block_number    INTEGER,
+            UNIQUE(source, owner, idx)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_holders_token    ON holders(token_symbol);
         CREATE INDEX IF NOT EXISTS idx_snapshots_token  ON holder_snapshots(token_symbol);
         CREATE INDEX IF NOT EXISTS idx_snapshots_date   ON holder_snapshots(snapshot_date);
@@ -91,6 +101,12 @@ def init_db():
         ("holders",          "source_balance", "REAL"),     # balance reported by the holder source
         ("holders",          "verified_block", "INTEGER"),  # block balance_at_pull was read at via balanceOf()
         ("holders",          "labels",         "TEXT"),     # JSON list of public labels
+        ("holders",          "wallet_balance", "REAL"),     # balanceOf() part of balance_at_pull
+        ("holders",          "positions",      "TEXT"),     # JSON {source: amount} staked outside the wallet
+        ("holders",          "category",       "TEXT"),     # whale | insider
+        ("holders",          "insider_reason", "TEXT"),     # why it was classed insider (published methodology)
+        ("holders",          "first_funder",   "TEXT"),     # sender of the first inbound transfer of the token
+        ("holders",          "entity_id",      "TEXT"),     # shared id for Safes controlled by the same signers
         ("raw_holder_pulls", "source",         "TEXT"),
         ("raw_holder_pulls", "labels",         "TEXT"),
     ]:

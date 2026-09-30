@@ -6,6 +6,7 @@ load_dotenv()
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "")
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "")
 DUNE_API_KEY      = os.getenv("DUNE_API_KEY", "")
+BLOCKSCOUT_API_KEY = os.getenv("BLOCKSCOUT_API_KEY", "")  # optional; raises Blockscout rate limits
 
 ETHERSCAN_BASE_URL = "https://api.etherscan.io/api"
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
@@ -30,11 +31,15 @@ DB_PATH = "data/whale_tracker.db"
 # We fetch more than we need so the filtered cohort stays at ~50 clean addresses.
 TOP_HOLDER_RAW_LIMIT = 300
 TOP_HOLDER_COHORT_SIZE = 50
+# For tokens with staking positions (chain/positions.py): how many of the largest
+# stakers to add as candidates alongside the wallet top-holder list.
+POSITION_CANDIDATE_LIMIT = 200
 
 # Flag a holder when the source's balance and on-chain balanceOf() disagree by more than this.
 BALANCE_MISMATCH_TOLERANCE = 0.01
 
 # Token basket — 13 mid-cap ERC-20s for Phase 1.
+# (MKR, if ever re-added, needs "standard": "dstoken" — it emits Mint/Burn, not zero-address Transfers.)
 # Format: symbol -> {contract, decimals, coingecko_id[, standard]}
 # standard: "dstoken" for tokens emitting Mint/Burn instead of zero-address Transfers.
 # All addresses verified on-chain via symbol() call.
@@ -42,7 +47,10 @@ TOKEN_BASKET = {
     "LINK":  {"contract": "0x514910771af9ca656af840dff83e8264ecf986ca", "decimals": 18, "coingecko_id": "chainlink"},
     "UNI":   {"contract": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984", "decimals": 18, "coingecko_id": "uniswap"},
     "AAVE":  {"contract": "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9", "decimals": 18, "coingecko_id": "aave"},
-    "MKR":   {"contract": "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2", "decimals": 18, "coingecko_id": "maker", "standard": "dstoken"},
+    # SKY replaced MKR on 2026-09-30: ~92% of MKR had converted (1 MKR = 24,000 SKY) and
+    # late conversions pay a growing penalty, so MKR flows mostly reflect conversion, not conviction.
+    # ~44% of SKY sits in lockstake — see chain/positions.py for how staked SKY is attributed.
+    "SKY":   {"contract": "0x56072c95faa701256059aa122697b133aded9279", "decimals": 18, "coingecko_id": "sky"},
     "LDO":   {"contract": "0x5a98fcbea516cf06857215779fd812ca3bef1b32", "decimals": 18, "coingecko_id": "lido-dao"},
     "CRV":   {"contract": "0xd533a949740bb3306d119cc777fa900ba034cd52", "decimals": 18, "coingecko_id": "curve-dao-token"},
     "ENS":   {"contract": "0xc18360217d8f7ab5e7c516566761ea12ce7f9d72", "decimals": 18, "coingecko_id": "ethereum-name-service"},
@@ -59,11 +67,47 @@ TOKEN_BASKET = {
 # that KNOWN_EXCLUSIONS doesn't list.
 EXCLUDE_LABEL_KEYWORDS = [
     "exchange", "hot wallet", "cold wallet", "deposit address",
-    "noncirculating", "non-circulating", "treasury", "vesting",
     "binance", "coinbase", "kraken", "okx", "bybit", "bitfinex", "gemini",
     "robinhood", "crypto.com", "bithumb", "upbit", "htx", "huobi", "kucoin",
     "gate.io", "bitget", "mexc", "paxos", "bitpanda", "bitstamp",
 ]
+
+# Insider = project-controlled or project-allocated supply (team, investors, treasury,
+# vesting). Insiders are NOT dropped: they're tracked as a separate group, because
+# "insiders selling while outside whales buy" is itself a signal.
+# A holder is an insider when (checked in chain/insiders.py):
+#   1. one of its own public labels matches INSIDER_LABEL_KEYWORDS, or
+#   2. its first inbound transfer of the token came from an address in the token's
+#      INSIDER_SOURCES, or from an address whose label matches INSIDER_LABEL_KEYWORDS, or
+#   3. it is a Safe sharing at least half its signers with an insider Safe.
+# Keywords match whole words, case-insensitive.
+INSIDER_LABEL_KEYWORDS = [
+    "treasury", "vesting", "noncirculating", "non-circulating", "foundation",
+    "team", "deployer", "investor", "investors", "token manager", "multisig: team",
+]
+
+# Per-token addresses that distribute insider allocations. Every entry needs evidence.
+INSIDER_SOURCES = {
+    "LDO": {
+        # Lido DAO Aragon app that issued LDO allocations: sent 50M LDO each to three
+        # Safes on 2020-12-17 (token launch) and round-number grants (10M, 7x5M, 2M, 1.93M)
+        # to ten Safes sharing the same 5 signers on 2026-01-01.
+        "0xf73a1260d222f447210581ddf212d915c09a3249",
+    },
+}
+
+# Funders whose transfers say nothing about insider status (conversions, DEX settlement).
+# suggest_insider_sources() skips these so REVIEW output stays actionable.
+NEUTRAL_FUNDERS = {
+    "0xa1ea1ba18e88c381c724a75f23a130420c403f9a",  # Sky: MKR→SKY converter (MkrSky)
+    "0x9008d19f58aabd9ed0d60971565aa8510560ab41",  # CoW Protocol GPv2Settlement
+    "0xba12222222228d8ba445958a75a0704d566bf2c8",  # Balancer Vault
+    "0x000000000004444c5dc75cb358380d2e3de08a90",  # Uniswap v4 PoolManager
+    # Unlabelled exchange hot wallet (contract): takes many small deposits across dozens
+    # of tokens from distinct addresses and pays out via batched withdrawals (seen 2026-09-30).
+    # First funder of 25 LINK and 3 SKY top holders — i.e. they withdrew from this exchange.
+    "0xa9d1e08c7793af67e9d92fe308d5697fb81d3e43",
+}
 
 # Addresses to always exclude from the holder cohort.
 # Covers: exchanges, bridges, Chainlink staking contracts, LP contracts, zero address.
