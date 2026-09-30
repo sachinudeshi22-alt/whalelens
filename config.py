@@ -10,6 +10,13 @@ DUNE_API_KEY      = os.getenv("DUNE_API_KEY", "")
 ETHERSCAN_BASE_URL = "https://api.etherscan.io/api"
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 DUNE_BASE_URL      = "https://api.dune.com/api/v1"
+BLOCKSCOUT_BASE_URL = "https://eth.blockscout.com/api/v2"
+
+# Where fetch_holders.py gets the candidate top-holder list:
+#   "blockscout" — free, no key, current balances + public address labels
+#   "dune"       — transfer-sum SQL; needs a Dune plan that can run queries
+#                  (the account went read-only on the free tier by 2026-09)
+HOLDER_SOURCE = "blockscout"
 # Tried in order. Must be archive-capable: verify_balances.py reads historical state.
 # (publicnode now rejects archive requests without a personal token.)
 ETH_RPC_URLS = [
@@ -24,7 +31,7 @@ DB_PATH = "data/whale_tracker.db"
 TOP_HOLDER_RAW_LIMIT = 300
 TOP_HOLDER_COHORT_SIZE = 50
 
-# Flag a holder when the Dune-derived balance and on-chain balanceOf() disagree by more than this.
+# Flag a holder when the source's balance and on-chain balanceOf() disagree by more than this.
 BALANCE_MISMATCH_TOLERANCE = 0.01
 
 # Token basket — 13 mid-cap ERC-20s for Phase 1.
@@ -46,6 +53,17 @@ TOKEN_BASKET = {
     "SUSHI": {"contract": "0x6b3595068778dd592e39a122f4f5a5cf09c90fe2", "decimals": 18, "coingecko_id": "sushi"},
     "BAL":   {"contract": "0xba100000625a3754423978a60c9317c58a424e3d", "decimals": 18, "coingecko_id": "balancer"},
 }
+
+# Drop a holder when any of its public labels (from Blockscout) contains one of these,
+# case-insensitive. Catches exchange hot/cold/deposit wallets and team supply wallets
+# that KNOWN_EXCLUSIONS doesn't list.
+EXCLUDE_LABEL_KEYWORDS = [
+    "exchange", "hot wallet", "cold wallet", "deposit address",
+    "noncirculating", "non-circulating", "treasury", "vesting",
+    "binance", "coinbase", "kraken", "okx", "bybit", "bitfinex", "gemini",
+    "robinhood", "crypto.com", "bithumb", "upbit", "htx", "huobi", "kucoin",
+    "gate.io", "bitget", "mexc", "paxos", "bitpanda", "bitstamp",
+]
 
 # Addresses to always exclude from the holder cohort.
 # Covers: exchanges, bridges, Chainlink staking contracts, LP contracts, zero address.

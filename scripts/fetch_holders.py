@@ -1,13 +1,14 @@
 """
-Pulls the current top holders for each token in TOKEN_BASKET from Dune,
+Pulls the current top holders for each token in TOKEN_BASKET (from Blockscout or
+Dune, per HOLDER_SOURCE),
 applies the exclusion filter, verifies every balance on-chain, and writes the
 clean cohort to the `holders` table.
 
 Run this once to bootstrap and again weekly to refresh the cohort.
-No pre-saved Dune query needed — the script creates, runs, and deletes a
-temporary query via the Dune API on each run. Raw Dune rows are saved to
-`raw_holder_pulls`, so --from-raw can rebuild cohorts after a filter change
-without spending Dune credits.
+With the Dune source, no pre-saved query is needed — the script creates, runs,
+and deletes a temporary query via the Dune API on each run. Raw source rows are
+saved to `raw_holder_pulls`, so --from-raw can rebuild cohorts after a filter
+change without pulling again.
 
 Usage:
     python scripts/fetch_holders.py
@@ -15,6 +16,7 @@ Usage:
     python scripts/fetch_holders.py --from-raw          # re-filter the last saved pull
 """
 import argparse
+import json
 import sys
 import time
 import requests
@@ -27,6 +29,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     DUNE_API_KEY,
     DUNE_BASE_URL,
+    BLOCKSCOUT_BASE_URL,
+    HOLDER_SOURCE,
+    EXCLUDE_LABEL_KEYWORDS,
     TOKEN_BASKET,
     TOP_HOLDER_RAW_LIMIT,
     TOP_HOLDER_COHORT_SIZE,
@@ -205,10 +210,71 @@ def fetch_top_holders_from_dune(symbol: str, token: dict) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Blockscout holder source (free, no key)
+# ---------------------------------------------------------------------------
+
+def _blockscout_labels(address: dict) -> list[str]:
+    labels = [t.get("name") for t in ((address.get("metadata") or {}).get("tags") or [])]
+    labels += [t.get("display_name") for t in address.get("public_tags") or []]
+    if address.get("name"):
+        labels.append(address["name"])   # contract name, e.g. "GnosisSafeProxy"
+    return [l for l in labels if l]
+
+
+def fetch_top_holders_from_blockscout(symbol: str, token: dict) -> list[dict]:
+    """
+    Page through Blockscout's token holder list (sorted by current balance, 50/page).
+    Each row: {holder_address: str, balance: float, labels: list[str]}
+    """
+    url = f"{BLOCKSCOUT_BASE_URL}/tokens/{token['contract']}/holders"
+    scale = 10 ** token["decimals"]
+    rows, params = [], {}
+    while len(rows) < TOP_HOLDER_RAW_LIMIT:
+        for attempt in range(3):
+            try:
+                resp = requests.get(url, params=params, timeout=30)
+                resp.raise_for_status()
+                break
+            except requests.RequestException:
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
+        data = resp.json()
+        for item in data["items"]:
+            rows.append({
+                "holder_address": item["address"]["hash"].lower(),
+                "balance": int(item["value"]) / scale,
+                "labels": _blockscout_labels(item["address"]),
+            })
+        params = data.get("next_page_params")
+        if not params:
+            break
+        time.sleep(0.5)
+    rows = rows[:TOP_HOLDER_RAW_LIMIT]
+    print(f"  Blockscout returned {len(rows)} raw rows")
+    return rows
+
+
+def fetch_top_holders(symbol: str, token: dict) -> list[dict]:
+    if HOLDER_SOURCE == "blockscout":
+        return fetch_top_holders_from_blockscout(symbol, token)
+    return fetch_top_holders_from_dune(symbol, token)
+
+
+# ---------------------------------------------------------------------------
 # Exclusion filter — shows full funnel
 # ---------------------------------------------------------------------------
 
 _EXCLUSION_SET = {a.lower() for a in KNOWN_EXCLUSIONS}
+
+
+def _excluded_by_label(labels: list[str]) -> str | None:
+    """Return the first label matching EXCLUDE_LABEL_KEYWORDS, else None."""
+    for label in labels:
+        low = label.lower()
+        if any(k in low for k in EXCLUDE_LABEL_KEYWORDS):
+            return label
+    return None
 
 
 def _preview(entries: list[dict]) -> str:
@@ -221,19 +287,26 @@ def _preview(entries: list[dict]) -> str:
 def apply_exclusion_filter(rows: list[dict], symbol: str, token: dict) -> list[dict]:
     """
     Four-stage filter with funnel output:
-      1. Drop known exchanges / labelled addresses (KNOWN_EXCLUSIONS)
+      1. Drop KNOWN_EXCLUSIONS, and any address whose public labels match
+         EXCLUDE_LABEL_KEYWORDS (exchange, team-supply and treasury wallets)
       2. Classify by bytecode: keep EOAs, EIP-7702 EOAs and Safes; drop other contracts
       3. Verify balances with balanceOf() at one pinned block; drop phantom (zero) balances
          and re-rank by the on-chain balance, which is the source of truth
       4. Keep top N of what remains
     Any RPC failure raises — a partial check must never pass contracts through.
     """
-    # Stage 1: known label exclusions
-    after_labels, dropped_labels = [], []
+    # Stage 1: known addresses and public-label exclusions
+    after_labels, dropped_labels, dropped_tagged = [], [], []
     for rank, row in enumerate(rows, start=1):
         addr = row["holder_address"].lower()
-        entry = {"holder_address": addr, "rank": rank, "dune_balance": row["balance"]}
-        (dropped_labels if addr in _EXCLUSION_SET else after_labels).append(entry)
+        entry = {"holder_address": addr, "rank": rank, "source_balance": row["balance"],
+                 "labels": row.get("labels") or []}
+        if addr in _EXCLUSION_SET:
+            dropped_labels.append(entry)
+        elif _excluded_by_label(entry["labels"]):
+            dropped_tagged.append(entry)
+        else:
+            after_labels.append(entry)
 
     # Stage 2: wallet-type classification
     print(f"  Classifying {len(after_labels)} addresses by bytecode...")
@@ -255,7 +328,7 @@ def apply_exclusion_filter(rows: list[dict], symbol: str, token: dict) -> list[d
         if h["balance"] <= 0:
             phantoms.append(h)
             continue
-        if abs(h["dune_balance"] - h["balance"]) / h["balance"] > BALANCE_MISMATCH_TOLERANCE:
+        if abs(h["source_balance"] - h["balance"]) / h["balance"] > BALANCE_MISMATCH_TOLERANCE:
             mismatched.append(h)
         verified.append(h)
     verified.sort(key=lambda h: h["balance"], reverse=True)
@@ -269,19 +342,35 @@ def apply_exclusion_filter(rows: list[dict], symbol: str, token: dict) -> list[d
 
     # Funnel output
     print(f"\n  Filter funnel for {symbol}:")
-    print(f"    Raw pulled from Dune          : {len(rows):>4}")
-    print(f"    Dropped — known labels        : {len(dropped_labels):>4}{_preview(dropped_labels)}")
+    print(f"    Raw pulled from source        : {len(rows):>4}")
+    print(f"    Dropped — known addresses     : {len(dropped_labels):>4}{_preview(dropped_labels)}")
+    print(f"    Dropped — exchange/team labels: {len(dropped_tagged):>4}", end="")
+    if dropped_tagged:
+        tags = sorted({_excluded_by_label(h["labels"]) for h in dropped_tagged})
+        print(f"  ({', '.join(tags[:4])}{'...' if len(tags) > 4 else ''})", end="")
+    print()
     print(f"    Dropped — non-wallet contracts: {len(dropped_contracts):>4}{_preview(dropped_contracts)}")
     print(f"    Dropped — zero on-chain       : {len(phantoms):>4}{_preview(phantoms)}")
-    print(f"    Dune/chain mismatch >{BALANCE_MISMATCH_TOLERANCE:.0%} (kept, chain value used): {len(mismatched)}")
+    print(f"    Source/chain mismatch >{BALANCE_MISMATCH_TOLERANCE:.0%} (kept, chain value used): {len(mismatched)}")
     print(f"    Real wallets remaining        : {len(verified):>4}")
     print(f"    Kept in cohort (top {TOP_HOLDER_COHORT_SIZE})       : {len(cohort):>4}  {type_counts}")
+
+    # Sources over-report (phantom balances) far more often than they under-report,
+    # so any real holder missing from the raw list holds at most the last raw balance.
+    # If our smallest cohort member beats that, nobody outside the list could displace it.
+    if cohort and rows:
+        floor = rows[-1]["balance"]
+        if cohort[-1]["balance"] >= floor:
+            print(f"    Completeness: OK (cohort min {cohort[-1]['balance']:,.2f} ≥ last raw row {floor:,.2f})")
+        else:
+            print(f"\n  WARNING: cohort min {cohort[-1]['balance']:,.2f} < last raw row {floor:,.2f} — "
+                  f"real holders beyond the raw list may be missing; raise TOP_HOLDER_RAW_LIMIT")
 
     if len(cohort) < TOP_HOLDER_COHORT_SIZE:
         print(f"\n  WARNING: only {len(cohort)} clean holders found — consider increasing TOP_HOLDER_RAW_LIMIT")
     if len(phantoms) + len(mismatched) > len(after_types) * 0.2:
-        print(f"\n  WARNING: >20% of Dune balances are wrong for {symbol} — the transfer-sum "
-              f"query likely misses a non-standard event; ranking may be missing real holders")
+        print(f"\n  NOTE: {len(phantoms) + len(mismatched)}/{len(after_types)} source balances for {symbol} "
+              f"were wrong and replaced with balanceOf() — the source misses a non-standard event")
 
     return cohort
 
@@ -310,9 +399,10 @@ def upsert_token(symbol: str, token: dict) -> None:
 def save_raw_pull(symbol: str, pull_id: str, rows: list[dict]) -> None:
     con = get_connection()
     con.executemany(
-        "INSERT OR IGNORE INTO raw_holder_pulls (token_symbol, pull_id, rank, address, dune_balance) "
-        "VALUES (?,?,?,?,?)",
-        [(symbol, pull_id, i, r["holder_address"].lower(), r["balance"]) for i, r in enumerate(rows, 1)],
+        "INSERT OR IGNORE INTO raw_holder_pulls "
+        "(token_symbol, pull_id, source, rank, address, source_balance, labels) VALUES (?,?,?,?,?,?,?)",
+        [(symbol, pull_id, HOLDER_SOURCE, i, r["holder_address"].lower(), r["balance"],
+          json.dumps(r.get("labels") or [])) for i, r in enumerate(rows, 1)],
     )
     con.commit()
     con.close()
@@ -321,14 +411,14 @@ def save_raw_pull(symbol: str, pull_id: str, rows: list[dict]) -> None:
 def load_latest_raw_pull(symbol: str) -> list[dict]:
     con = get_connection()
     rows = con.execute(
-        """SELECT address, dune_balance FROM raw_holder_pulls
+        """SELECT address, source_balance, labels FROM raw_holder_pulls
            WHERE token_symbol = ? AND pull_id = (
                SELECT MAX(pull_id) FROM raw_holder_pulls WHERE token_symbol = ?)
            ORDER BY rank""",
         (symbol, symbol),
     ).fetchall()
     con.close()
-    return [{"holder_address": a, "balance": b} for a, b in rows]
+    return [{"holder_address": a, "balance": b, "labels": json.loads(l or "[]")} for a, b, l in rows]
 
 
 def replace_cohort(symbol: str, holders: list[dict]) -> None:
@@ -337,10 +427,11 @@ def replace_cohort(symbol: str, holders: list[dict]) -> None:
         con.execute("DELETE FROM holders WHERE token_symbol = ?", (symbol,))
         con.executemany(
             """INSERT INTO holders
-               (token_symbol, address, rank, balance_at_pull, wallet_type, dune_balance, verified_block)
-               VALUES (?,?,?,?,?,?,?)""",
+               (token_symbol, address, rank, balance_at_pull, wallet_type, source_balance,
+                verified_block, labels)
+               VALUES (?,?,?,?,?,?,?,?)""",
             [(symbol, h["holder_address"], h["rank"], h["balance"], h["wallet_type"],
-              h["dune_balance"], h["verified_block"]) for h in holders],
+              h["source_balance"], h["verified_block"], json.dumps(h["labels"])) for h in holders],
         )
         con.commit()
         print(f"  Wrote {len(holders)} holders to DB for {symbol}")
@@ -365,9 +456,9 @@ def process_token(symbol: str, token: dict, from_raw: bool, pull_id: str) -> Non
         if not raw_rows:
             print("  No saved raw pull — run without --from-raw first")
             return
-        print(f"  Loaded {len(raw_rows)} rows from the last saved Dune pull")
+        print(f"  Loaded {len(raw_rows)} rows from the last saved pull")
     else:
-        raw_rows = fetch_top_holders_from_dune(symbol, token)
+        raw_rows = fetch_top_holders(symbol, token)
         save_raw_pull(symbol, pull_id, raw_rows)
     clean = apply_exclusion_filter(raw_rows, symbol, token)
 
@@ -384,13 +475,13 @@ def process_token(symbol: str, token: dict, from_raw: bool, pull_id: str) -> Non
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch and filter top holders from Dune")
+    parser = argparse.ArgumentParser(description="Fetch, filter and verify top holders")
     parser.add_argument("--symbol", default=None, help="Single token symbol (e.g. LINK)")
     parser.add_argument("--from-raw", action="store_true",
-                        help="Re-filter the last saved Dune pull instead of querying Dune")
+                        help="Re-filter the last saved pull instead of fetching again")
     args = parser.parse_args()
 
-    if not DUNE_API_KEY and not args.from_raw:
+    if HOLDER_SOURCE == "dune" and not DUNE_API_KEY and not args.from_raw:
         sys.exit("ERROR: DUNE_API_KEY not set in .env")
 
     init_db()
@@ -408,7 +499,7 @@ def main():
             process_token(symbol, token, args.from_raw, pull_id)
         except (requests.RequestException, RuntimeError, TimeoutError) as e:
             print(f"  FAILED for {symbol}: {e}")
-        if not args.from_raw:
+        if not args.from_raw and HOLDER_SOURCE == "dune":
             time.sleep(15)  # Dune free-tier rate limiting — conservative to avoid 429s
 
 

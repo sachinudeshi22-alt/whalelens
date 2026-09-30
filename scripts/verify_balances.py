@@ -1,9 +1,9 @@
 """
-Cross-checks the cohort's Dune-derived balances against on-chain balanceOf().
+Cross-checks the cohort's source-reported balances against on-chain balanceOf().
 
 For each token, reads balanceOf() for every cohort address at the block closest
 to when the cohort was pulled (so real trading since then doesn't count as a
-mismatch), and flags holders whose Dune balance is off by more than
+mismatch), and flags holders whose source balance is off by more than
 BALANCE_MISMATCH_TOLERANCE. Results are written to `balance_checks`.
 
 Also reports the wallet type of each current holder, and how much the cohort's
@@ -37,7 +37,7 @@ def _pull_block(pulled_at: str, cache: dict) -> int:
 def verify_token(symbol: str, token: dict, head: int, block_cache: dict) -> dict:
     con = get_connection()
     rows = con.execute(
-        "SELECT address, COALESCE(dune_balance, balance_at_pull), pulled_at "
+        "SELECT address, COALESCE(source_balance, balance_at_pull), pulled_at "
         "FROM holders WHERE token_symbol = ? ORDER BY rank",
         (symbol,),
     ).fetchall()
@@ -46,7 +46,7 @@ def verify_token(symbol: str, token: dict, head: int, block_cache: dict) -> dict
         return {}
 
     addrs = [r[0] for r in rows]
-    dune = {r[0]: r[1] for r in rows}
+    source = {r[0]: r[1] for r in rows}
     block = _pull_block(rows[0][2], block_cache)
     scale = 10 ** token["decimals"]
 
@@ -57,15 +57,15 @@ def verify_token(symbol: str, token: dict, head: int, block_cache: dict) -> dict
     mismatches = []
     for a in addrs:
         chain = at_pull[a]
-        rel = (dune[a] - chain) / chain if chain else float("inf")
+        rel = (source[a] - chain) / chain if chain else float("inf")
         con.execute(
             """INSERT OR REPLACE INTO balance_checks
-               (token_symbol, address, block_number, dune_balance, chain_balance, rel_diff)
+               (token_symbol, address, block_number, source_balance, chain_balance, rel_diff)
                VALUES (?,?,?,?,?,?)""",
-            (symbol, a, block, dune[a], chain, rel if chain else None),
+            (symbol, a, block, source[a], chain, rel if chain else None),
         )
         if abs(rel) > BALANCE_MISMATCH_TOLERANCE:
-            mismatches.append((a, dune[a], chain, rel))
+            mismatches.append((a, source[a], chain, rel))
     con.commit()
     con.close()
 
@@ -76,10 +76,10 @@ def verify_token(symbol: str, token: dict, head: int, block_cache: dict) -> dict
         type_counts[t] = type_counts.get(t, 0) + 1
 
     print(f"\n{symbol}  (pull block {block}, {len(addrs)} holders)")
-    print(f"  Dune vs chain mismatches (>{BALANCE_MISMATCH_TOLERANCE:.0%}) : {len(mismatches)}")
+    print(f"  Source vs chain mismatches (>{BALANCE_MISMATCH_TOLERANCE:.0%}) : {len(mismatches)}")
     for a, d, c, rel in sorted(mismatches, key=lambda m: -abs(m[3]) if m[2] else float("-inf"))[:5]:
         rel_s = f"{rel:+.1%}" if c else "chain=0"
-        print(f"    {a}  dune {d:>18,.2f}  chain {c:>18,.2f}  ({rel_s})")
+        print(f"    {a}  source {d:>18,.2f}  chain {c:>18,.2f}  ({rel_s})")
     print(f"  Wallet types now                   : {type_counts}")
     print(f"  Cohort holdings pull → now         : {total_pull:,.0f} → {total_now:,.0f} "
           f"({(total_now - total_pull) / total_pull:+.1%})")
