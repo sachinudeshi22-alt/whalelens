@@ -8,6 +8,7 @@ cohort looked at backwards. Tokens without built cohorts are listed as pending.
 Usage:
     python scripts/export_site.py
 """
+import hashlib
 import json
 import sys
 from datetime import date, timedelta
@@ -146,10 +147,21 @@ def export_token(con, symbol: str) -> dict | None:
             "quality": data["quality"]}
 
 
-def export_methodology() -> None:
+def asset_version() -> str:
+    """Content hash of the CSS/JS, appended to their URLs so visitors never get stale code."""
+    h = hashlib.sha256()
+    for name in ("style.css", "app.js"):
+        h.update((SITE / name).read_bytes())
+    return h.hexdigest()[:10]
+
+
+def export_pages() -> None:
+    v = asset_version()
+    index = (SITE / "index.template.html").read_text()
+    (SITE / "index.html").write_text(index.replace("{{V}}", v))
     body = markdown.markdown((ROOT / "docs" / "METHODOLOGY.md").read_text(), extensions=["tables"])
     template = (SITE / "methodology.template.html").read_text()
-    (SITE / "methodology.html").write_text(template.replace("<!--BODY-->", body))
+    (SITE / "methodology.html").write_text(template.replace("<!--BODY-->", body).replace("{{V}}", v))
 
 
 def main():
@@ -168,7 +180,7 @@ def main():
     con.close()
     (SITE / "data" / "overview.json").write_text(json.dumps(
         {"tokens": tokens, "pending": pending}, separators=(",", ":")))
-    export_methodology()
+    export_pages()
     print(f"Wrote site/data for {len(tokens)} tokens ({len(pending)} pending)")
 
 

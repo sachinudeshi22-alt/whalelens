@@ -49,6 +49,7 @@
     for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, v);
     return n;
   }
+  const show = (...nodes) => app.replaceChildren(...nodes.flat().filter((n) => n !== null && n !== undefined && n !== false));
   const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
   // ---------- formatting ----------
@@ -137,11 +138,18 @@
       el("span", { class: "t-name", text: name }));
   }
 
-  function niceMax(v) {
-    if (v <= 0) return 1;
-    const p = Math.pow(10, Math.floor(Math.log10(v)));
-    for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p;
-    return 10 * p;
+  // Round step first (1/2/2.5/5 × 10^k), then the axis max as a whole number of steps
+  function niceScale(maxValue, targetTicks) {
+    const raw = Math.max(maxValue, 1e-9) / (targetTicks || 4);
+    const p = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 2.5, 5, 10].map((m) => m * p).find((c) => c >= raw);
+    const n = Math.max(1, Math.ceil(maxValue / step - 1e-9));
+    return { step, max: step * n, n };
+  }
+  function tickPct(v, step) {
+    const pctStep = step * 100;
+    const digits = pctStep >= 1 ? (Number.isInteger(+pctStep.toFixed(6)) ? 0 : 1) : Math.min(3, Math.ceil(-Math.log10(pctStep)) + (pctStep * Math.pow(10, Math.ceil(-Math.log10(pctStep))) % 1 ? 1 : 0));
+    return (v * 100).toFixed(digits) + "%";
   }
 
   // ---------- line chart: share of supply over time ----------
@@ -153,17 +161,17 @@
       const m = { l: 44, r: W < 500 ? 12 : 96, t: 10, b: 28 };
       const iw = W - m.l - m.r, ih = H - m.t - m.b;
       const all = series.flatMap((s) => s.values).filter((v) => v !== null);
-      const yMax = niceMax(Math.max(...all) * 1.08);
+      const sc = niceScale(Math.max(...all) * 1.05, 4), yMax = sc.max;
       const x = (i) => m.l + (dates.length < 2 ? iw / 2 : (i / (dates.length - 1)) * iw);
       const y = (v) => m.t + ih - (v / yMax) * ih;
       const s = svg("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img",
         "aria-label": "Share of total supply held over time" });
 
-      for (let k = 0; k <= 4; k++) {
-        const v = (yMax / 4) * k, yy = y(v);
+      for (let k = 0; k <= sc.n; k++) {
+        const v = sc.step * k, yy = y(v);
         s.append(svg("line", { class: k === 0 ? "baseline" : "gridline", x1: m.l, x2: W - m.r, y1: yy, y2: yy }));
         const t = svg("text", { class: "tick", x: m.l - 8, y: yy + 4, "text-anchor": "end" });
-        t.textContent = pct(v, v < 0.1 && k ? 1 : 0);
+        t.textContent = tickPct(v, sc.step);
         s.append(t);
       }
       let lastMonth = "";
@@ -255,18 +263,20 @@
       const W = Math.max(300, box.clientWidth), H = 220;
       const m = { l: 52, r: 12, t: 10, b: 28 };
       const iw = W - m.l - m.r, ih = H - m.t - m.b;
-      const ext = niceMax(Math.max(...flows.map((f) => Math.abs(f.pct_supply)), 1e-6) * 1.1);
+      const fs = niceScale(Math.max(...flows.map((f) => Math.abs(f.pct_supply)), 1e-6) * 1.05, 2);
+      const ext = fs.max;
       const y = (v) => m.t + ih / 2 - (v / ext) * (ih / 2);
       const band = iw / flows.length;
       const bw = Math.max(2, Math.min(24, band - 2));
       const s = svg("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img",
         "aria-label": "Weekly net change in whale holdings, as share of supply" });
-      [-ext, -ext / 2, 0, ext / 2, ext].forEach((v) => {
-        s.append(svg("line", { class: v === 0 ? "baseline" : "gridline", x1: m.l, x2: W - m.r, y1: y(v), y2: y(v) }));
+      for (let k = -fs.n; k <= fs.n; k++) {
+        const v = fs.step * k;
+        s.append(svg("line", { class: k === 0 ? "baseline" : "gridline", x1: m.l, x2: W - m.r, y1: y(v), y2: y(v) }));
         const t = svg("text", { class: "tick", x: m.l - 8, y: y(v) + 4, "text-anchor": "end" });
-        t.textContent = (v > 0 ? "+" : v < 0 ? "−" : "") + pct(Math.abs(v), Math.abs(v) < 0.01 ? 2 : 1);
+        t.textContent = (k > 0 ? "+" : k < 0 ? "−" : "") + tickPct(Math.abs(v), fs.step);
         s.append(t);
-      });
+      }
       let lastMonth = "";
       flows.forEach((f, i) => {
         const mo = f.week_end.slice(0, 7);
@@ -337,12 +347,12 @@
   // ---------- card with chart/table toggle ----------
   function chartCard(title, sub, chartNode, legendNode, tableBuilder) {
     let showingTable = false;
-    const body = el("div", {}, legendNode, chartNode);
+    const body = el("div", {}, ...[legendNode, chartNode].filter(Boolean));
     const btn = el("button", { class: "link-btn", type: "button", text: "Show table" });
     btn.addEventListener("click", () => {
       showingTable = !showingTable;
       btn.textContent = showingTable ? "Show chart" : "Show table";
-      body.replaceChildren(...(showingTable ? [tableBuilder()] : [legendNode, chartNode].filter(Boolean)));
+      body.replaceChildren(...(showingTable ? [tableBuilder()] : [legendNode, chartNode]).filter(Boolean));
     });
     return el("section", { class: "card" },
       el("div", { class: "card-head" }, el("div", {}, el("h2", { text: title }), el("p", { class: "sub", text: sub })), btn),
@@ -368,7 +378,7 @@
         el("td", { class: "num" }, t.stats.insider_share ? pct(t.stats.insider_share) : el("span", { class: "na", text: "none found" })),
         el("td", { class: "num" }, ic ? deltaCell(ic.pct) : el("span", { class: "na", text: "—" })));
     });
-    app.replaceChildren(
+    show(
       el("h1", { text: "What the biggest holders are doing" }),
       el("p", { class: "lede", text:
         "Whales are each day's 50 largest independent wallets, with staked tokens counted and exchanges removed. " +
@@ -438,7 +448,7 @@
     if (d.quality.proven < d.quality.days)
       notes.push(`Completeness is proven for ${d.quality.proven} of ${d.quality.days} days; on the rest, a wallet outside our candidate list could in principle have ranked in the top 50.`);
 
-    app.replaceChildren(
+    show(
       el("p", { class: "sub" }, el("a", { href: "#/", text: "← All tokens" })),
       el("h1", { text: symbol }),
       el("div", { class: "hero" },
@@ -491,7 +501,7 @@
       if (m) await tokenPage(m[1].toUpperCase());
       else await overview();
     } catch (e) {
-      app.replaceChildren(el("h1", { text: "Couldn't load data" }), el("p", { class: "lede", text: String(e.message || e) }));
+      show(el("h1", { text: "Couldn't load data" }), el("p", { class: "lede", text: String(e.message || e) }));
     }
   }
   window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });

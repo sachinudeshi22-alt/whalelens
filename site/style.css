@@ -136,7 +136,7 @@ tbody tr.row-link:hover { background: var(--wash); }
 .hero { margin: 4px 0 18px; }
 .hero .value { font-size: 52px; font-weight: 650; line-height: 1.05; }
 .hero .label { color: var(--ink-2); }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 0 0 16px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 0 0 16px; }
 .tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 14px 16px; }
 .tile .label { color: var(--ink-2); font-size: 13px; }
 .tile .value { font-size: 24px; font-weight: 620; margin-top: 2px; }
