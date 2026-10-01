@@ -30,7 +30,7 @@ class Reverted(Exception):
 # Execution failures inside the EVM (as opposed to transport / rate-limit errors).
 # Providers word these differently, e.g. blastapi: "EVM error: StackUnderflow".
 _EXECUTION_ERROR_MARKERS = ("revert", "evm error", "invalid opcode", "stack underflow",
-                            "stackunderflow", "out of gas", "execution")
+                            "stackunderflow", "out of gas", "gas required exceeds", "execution")
 
 
 def _is_revert(err: dict) -> bool:
@@ -150,28 +150,39 @@ _MULTICALL_CHUNK = 300
 _MULTICALLS_PER_REQUEST = 4
 
 
+def _individually(calls: list[tuple[str, str]], tag: str) -> list[bytes | None]:
+    """Fallback: plain eth_calls, each with its own gas cap; reverts become None."""
+    res = batch([("eth_call", [{"to": to, "data": cd}, tag]) for to, cd in calls])
+    return [None if isinstance(r, Reverted) or r is None else bytes.fromhex(r[2:]) for r in res]
+
+
 def multicall(calls: list[tuple[str, str]], block="latest") -> list[bytes | None]:
     """
     Run [(to, calldata_hex), ...] through Multicall3 at `block`.
     Returns raw return bytes per call, or None where that call reverted.
+
+    A sub-call that burns all its gas (e.g. probing an odd contract for a Safe
+    method) sinks the whole aggregate call, since Multicall3 can't cap gas per
+    call; such chunks are retried call by call.
     """
     tag = _block_tag(block)
-    rpc_calls = []
-    for start in range(0, len(calls), _MULTICALL_CHUNK):
-        chunk = calls[start:start + _MULTICALL_CHUNK]
-        data = encode(["(address,bool,bytes)[]"],
-                      [[(to, True, bytes.fromhex(cd[2:])) for to, cd in chunk]])
-        rpc_calls.append(("eth_call", [{"to": MULTICALL3, "data": _AGGREGATE3 + data.hex()}, tag]))
-    out: list[bytes | None] = []
+    chunks = [calls[i:i + _MULTICALL_CHUNK] for i in range(0, len(calls), _MULTICALL_CHUNK)]
+    rpc_calls = [
+        ("eth_call", [{"to": MULTICALL3, "data": _AGGREGATE3 + encode(
+            ["(address,bool,bytes)[]"], [[(to, True, bytes.fromhex(cd[2:])) for to, cd in chunk]]).hex()}, tag])
+        for chunk in chunks
+    ]
     # Each aggregate3 call is ~100KB of hex; keep JSON-RPC requests well under provider body limits
     results = []
     for g in range(0, len(rpc_calls), _MULTICALLS_PER_REQUEST):
         results += batch(rpc_calls[g:g + _MULTICALLS_PER_REQUEST])
-    for r in results:
+    out: list[bytes | None] = []
+    for chunk, r in zip(chunks, results):
         if isinstance(r, Reverted):
-            raise RpcError(f"multicall reverted: {r}")
-        (results,) = decode(["(bool,bytes)[]"], bytes.fromhex(r[2:]))
-        out += [ret if ok else None for ok, ret in results]
+            out += _individually(chunk, tag)
+            continue
+        (decoded,) = decode(["(bool,bytes)[]"], bytes.fromhex(r[2:]))
+        out += [ret if ok else None for ok, ret in decoded]
     return out
 
 
