@@ -3,7 +3,8 @@ from config import DB_PATH
 
 
 def get_connection():
-    return sqlite3.connect(DB_PATH)
+    # Generous timeout: pull and backfill jobs may write concurrently
+    return sqlite3.connect(DB_PATH, timeout=60)
 
 
 def init_db():
@@ -95,6 +96,27 @@ def init_db():
             UNIQUE(token_symbol, address)
         );
 
+        -- Daily on-chain holdings per tracked address, read at the first block of each
+        -- UTC day. Source of truth for every chart; written by backfill_history.py.
+        CREATE TABLE IF NOT EXISTS holdings_daily (
+            token_symbol    TEXT NOT NULL,
+            address         TEXT NOT NULL,
+            date            TEXT NOT NULL,        -- YYYY-MM-DD (UTC)
+            block_number    INTEGER NOT NULL,
+            wallet_balance  REAL NOT NULL,
+            staked_balance  REAL NOT NULL DEFAULT 0,
+            total           REAL NOT NULL,
+            UNIQUE(token_symbol, address, date)
+        );
+
+        -- First block at or after 00:00 UTC for each date.
+        CREATE TABLE IF NOT EXISTS daily_blocks (
+            date            TEXT PRIMARY KEY,
+            block_number    INTEGER NOT NULL,
+            block_timestamp INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_holdings_daily_tok_date ON holdings_daily(token_symbol, date);
         CREATE INDEX IF NOT EXISTS idx_holders_token    ON holders(token_symbol);
         CREATE INDEX IF NOT EXISTS idx_snapshots_token  ON holder_snapshots(token_symbol);
         CREATE INDEX IF NOT EXISTS idx_snapshots_date   ON holder_snapshots(snapshot_date);
