@@ -116,6 +116,23 @@ def init_db():
             block_timestamp INTEGER NOT NULL
         );
 
+        -- Per-address transfer totals over the scanned period (chain/transfers.py).
+        CREATE TABLE IF NOT EXISTS transfer_totals (
+            token_symbol    TEXT NOT NULL,
+            address         TEXT NOT NULL,
+            sent            REAL NOT NULL DEFAULT 0,
+            received        REAL NOT NULL DEFAULT 0,
+            n_out           INTEGER NOT NULL DEFAULT 0,
+            n_in            INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(token_symbol, address)
+        );
+
+        CREATE TABLE IF NOT EXISTS scan_state (
+            token_symbol    TEXT PRIMARY KEY,
+            from_block      INTEGER NOT NULL,     -- start of the scanned period
+            next_block      INTEGER NOT NULL      -- resume point
+        );
+
         CREATE INDEX IF NOT EXISTS idx_holdings_daily_tok_date ON holdings_daily(token_symbol, date);
         CREATE INDEX IF NOT EXISTS idx_holders_token    ON holders(token_symbol);
         CREATE INDEX IF NOT EXISTS idx_snapshots_token  ON holder_snapshots(token_symbol);
