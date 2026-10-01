@@ -97,3 +97,30 @@ def scan(symbol: str, contract: str, decimals: int, from_block: int, to_block: i
         start = end + 1
     con.close()
     return processed
+
+
+def aggregate_transfers(asset: str, from_block: int, to_block: int, to_address: str | None = None,
+                        decimals: int = 18) -> dict[str, float]:
+    """
+    {address: total} over transfers of `asset` in [from_block, to_block]:
+    with `to_address`, total *sent to it* per sender (deposits into a contract);
+    without, total *received* per recipient (e.g. who was handed share tokens).
+    """
+    scale = 10 ** decimals
+    params = {"fromBlock": hex(from_block), "toBlock": hex(to_block), "contractAddresses": [asset],
+              "category": ["erc20"], "maxCount": hex(1000), "withMetadata": False,
+              "excludeZeroValue": True, "order": "asc"}
+    if to_address:
+        params["toAddress"] = to_address
+    out: dict[str, float] = {}
+    while True:
+        res = _call(params)
+        for t in res.get("transfers", []):
+            raw = t.get("rawContract", {}).get("value")
+            value = int(raw, 16) / scale if raw else float(t.get("value") or 0)
+            who = (t.get("from") if to_address else t.get("to")) or ZERO
+            out[who.lower()] = out.get(who.lower(), 0.0) + value
+        key = res.get("pageKey")
+        if not key:
+            return out
+        params["pageKey"] = key

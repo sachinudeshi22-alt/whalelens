@@ -42,6 +42,9 @@ TOP_HOLDER_COHORT_SIZE = 50
 # For tokens with staking positions (chain/positions.py): how many of the largest
 # stakers to add as candidates alongside the wallet top-holder list.
 POSITION_CANDIDATE_LIMIT = 200
+# Escrow positions (veCRV, stkAAVE, …): only participants who deposited at least this
+# share of total supply are tracked. Untracked participants' positions are bounded by it.
+POSITION_MIN_DEPOSIT_SHARE = 0.00001
 
 # Point-in-time cohorts (scripts/build_cohorts.py): addresses that sent at least this
 # fraction of today's smallest whale holding during the scanned period join the universe.

@@ -174,6 +174,19 @@ def init_db():
             UNIQUE(token_symbol, date)
         );
 
+        -- Escrow position participants and their total deposits (chain/positions.py).
+        CREATE TABLE IF NOT EXISTS position_deposits (
+            source          TEXT NOT NULL,
+            address         TEXT NOT NULL,
+            deposited       REAL NOT NULL DEFAULT 0,
+            UNIQUE(source, address)
+        );
+
+        CREATE TABLE IF NOT EXISTS position_sync (
+            source          TEXT PRIMARY KEY,
+            next_block      INTEGER NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_cohort_daily ON cohort_daily(token_symbol, date);
         CREATE INDEX IF NOT EXISTS idx_holdings_daily_tok_date ON holdings_daily(token_symbol, date);
         CREATE INDEX IF NOT EXISTS idx_holders_token    ON holders(token_symbol);

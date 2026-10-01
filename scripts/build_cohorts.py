@@ -10,6 +10,8 @@ How (per token):
   1. Universe = latest raw top-holder list + every address that ever staked
      (position sources) + every address that sent at least UNIVERSE_SENT_FRACTION
      of today's smallest whale holding during the scanned period (transfer_totals).
+     Staking participants come from chain/positions.py; those below its deposit
+     floor are covered by adding the floor to the bound.
   2. Same exclusions as the live cohort (known addresses, exchange labels,
      non-wallet contracts), plus high-activity addresses (exchange / market-maker
      behaviour, see HIGH_ACTIVITY_TRANSFERS).
@@ -44,7 +46,7 @@ from db.schema import init_db, get_connection
 from chain.blockscout import metadata_labels
 from chain.classify import classify, KEEP_TYPES
 from chain.insiders import group_safes, trace_funding
-from chain.positions import POSITION_SOURCES
+from chain.positions import POSITION_SOURCES, unseen_position_floor
 from backfill_history import record_day
 from fetch_holders import _excluded_by_label
 
@@ -62,15 +64,15 @@ def build_universe(con, symbol: str) -> tuple[dict[str, dict], float, float]:
     floor_wallet = raw[-1][1]
     min_whale = con.execute("SELECT MIN(balance_at_pull) FROM holders WHERE token_symbol = ? AND category = 'whale'",
                             (symbol,)).fetchone()[0]
-    sent_threshold = UNIVERSE_SENT_FRACTION * min_whale
+    # Untracked staking participants (below the deposit floor) can hold at most this much staked
+    sent_threshold = UNIVERSE_SENT_FRACTION * min_whale + unseen_position_floor(symbol)
 
     uni: dict[str, dict] = {}
     for addr, _, labels in raw:
         uni[addr] = {"why": "top holder list", "labels": json.loads(labels or "[]")}
-    if symbol in POSITION_SOURCES:
-        for source in POSITION_SOURCES[symbol]:
-            for (owner,) in con.execute("SELECT DISTINCT owner FROM position_urns WHERE source = ?", (source.name,)):
-                uni.setdefault(owner, {"why": f"{source.name} participant", "labels": None})
+    for source in POSITION_SOURCES.get(symbol, []):
+        for owner in source.participants():
+            uni.setdefault(owner, {"why": f"{source.name} participant", "labels": None})
     for addr, sent in con.execute("SELECT address, sent FROM transfer_totals WHERE token_symbol = ? AND sent >= ?",
                                   (symbol, sent_threshold)):
         uni.setdefault(addr, {"why": f"sent {sent:,.0f} in period", "labels": None})

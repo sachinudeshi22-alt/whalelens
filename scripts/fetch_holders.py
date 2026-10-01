@@ -43,7 +43,7 @@ from chain.rpc import latest_block
 from chain.classify import classify, KEEP_TYPES
 from chain.blockscout import metadata_labels, token_holders
 from chain.insiders import group_safes, suggest_insider_sources, trace_funding
-from chain.positions import POSITION_SOURCES, holdings, position_participants
+from chain.positions import POSITION_SOURCES, holdings, position_participants, unseen_position_floor
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +506,7 @@ def process_token(symbol: str, token: dict, from_raw: bool, pull_id: str) -> Non
         positions = position_participants(symbol)
         print(f"  {len(positions)} addresses hold staked {symbol}")
         raw_rows, position_floor = add_position_candidates(symbol, token, raw_rows, positions)
+        position_floor += unseen_position_floor(symbol)
 
     whales, insiders = apply_exclusion_filter(raw_rows, symbol, token, positions, position_floor)
 

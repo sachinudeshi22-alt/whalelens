@@ -7,6 +7,21 @@ position size, and holdings() adds positions to wallet balances.
 
 Only sources with a verified per-owner read are listed here. Current coverage:
 
+  AAVE  — Safety Module (stkAAVE): shares × previewRedeem rate (1:1 before it existed)
+  CRV   — veCRV: locked(user).amount
+  LINK  — Staking v0.2 community pool: getStakerPrincipal(user)
+  SUSHI — SushiBar (xSUSHI): shares × SUSHI held by the bar / xSUSHI supply
+  BAL   — veBAL: locked 80BAL-20WETH pool tokens × BAL per pool token
+  1INCH — st1INCH: depositors(user).amount
+
+  Escrow participants are everyone who ever sent the token into the contract
+  (plus, for transferable share tokens, everyone who ever received shares), with
+  their total deposited. A position can't exceed its deposits by more than
+  accrued rewards, so only participants who deposited at least
+  POSITION_MIN_DEPOSIT_SHARE of supply are tracked; that floor is added to the
+  completeness bound. Each source can check its coverage against the contract's
+  own total (scripts/check_positions.py).
+
   SKY — LockstakeEngine. Each owner opens urns (Open events); the SKY locked in
         an urn is its `ink` in the Vat under the engine's ilk. When an urn picks a
         vote delegate, its SKY physically moves to a VoteDelegate and on into the
@@ -16,13 +31,22 @@ Only sources with a verified per-owner read are listed here. Current coverage:
 """
 import json
 
+from config import POSITION_MIN_DEPOSIT_SHARE, TOKEN_BASKET
 from chain.blockscout import get_logs
-from chain.rpc import balances_of, multicall
+from chain.rpc import balances_of, latest_block, multicall
+from chain.transfers import aggregate_transfers
 from db.schema import get_connection
+
+TOTAL_SUPPLY = "0x18160ddd"
+BALANCE_OF = "0x70a08231"
 
 
 def _word(addr: str) -> str:
     return addr.lower().replace("0x", "").rjust(64, "0")
+
+
+def _uint(ret: bytes | None, word: int = 0) -> int:
+    return int.from_bytes(ret[32 * word:32 * (word + 1)], "big") if ret and len(ret) >= 32 * (word + 1) else 0
 
 
 class LockstakePosition:
@@ -54,6 +78,12 @@ class LockstakePosition:
         con.close()
         return urns
 
+    def unseen_floor(self) -> float:
+        return 0.0   # every owner that ever opened an urn is tracked
+
+    def participants(self) -> list[str]:
+        return list(self._sync_urns())
+
     def all_positions(self, block="latest") -> dict[str, int]:
         """Raw staked amount for every owner that ever opened an urn."""
         urns = self._sync_urns()
@@ -66,9 +96,186 @@ class LockstakePosition:
         return out
 
 
+class EscrowPosition:
+    """
+    Tokens deposited into a contract that records a per-user amount.
+    Subclasses implement read(addresses, block) -> {addr: raw amount in the token's units}.
+    Selectors and deploy blocks are verified (web3_sha3 / creation transaction), not guessed.
+    """
+    name = ""
+    contract = ""        # escrow contract
+    asset = ""           # token users send in (participants are its senders)
+    share_token = None   # transferable receipt token, if any (its recipients are participants too)
+    predecessors = ()    # (contract, deploy_block) of earlier versions whose depositors migrated here
+    deploy_block = 0
+    symbol = ""
+
+    def _sync(self) -> None:
+        con = get_connection()
+        row = con.execute("SELECT next_block FROM position_sync WHERE source = ?", (self.name,)).fetchone()
+        start, head = (row[0] if row else self.deploy_block), latest_block()
+        if start <= head:
+            deposits = aggregate_transfers(self.asset, start, head, to_address=self.contract)
+            # Migrated stakers' tokens arrive from the old contract, not from them, so their
+            # deposits into the predecessor make them participants here
+            for old, old_deploy in self.predecessors:
+                old_start = old_deploy if row is None else start
+                for a, v in aggregate_transfers(self.asset, old_start, head, to_address=old).items():
+                    deposits[a] = deposits.get(a, 0.0) + v
+            if self.share_token:
+                for a, v in aggregate_transfers(self.share_token, start, head).items():
+                    deposits[a] = deposits.get(a, 0.0) + v
+            con.executemany(
+                """INSERT INTO position_deposits (source, address, deposited) VALUES (?,?,?)
+                   ON CONFLICT(source, address) DO UPDATE SET deposited = deposited + excluded.deposited""",
+                [(self.name, a, v) for a, v in deposits.items()])
+            con.execute("INSERT OR REPLACE INTO position_sync (source, next_block) VALUES (?,?)",
+                        (self.name, head + 1))
+            con.commit()
+        con.close()
+
+    def floor_in_deposit_units(self) -> float:
+        """Smallest total deposit worth tracking, in the units deposits are recorded in."""
+        token = TOKEN_BASKET[self.symbol]
+        supply = _uint(multicall([(token["contract"], TOTAL_SUPPLY)])[0]) / 10 ** token["decimals"]
+        return POSITION_MIN_DEPOSIT_SHARE * supply
+
+    def unseen_floor(self) -> float:
+        """Max position (token units) of any participant we don't track."""
+        return self.floor_in_deposit_units() * 1.05   # small allowance for accrued rewards
+
+    def participants(self) -> list[str]:
+        self._sync()
+        floor = self.floor_in_deposit_units()
+        con = get_connection()
+        rows = con.execute("SELECT address FROM position_deposits WHERE source = ? AND deposited >= ?",
+                           (self.name, floor)).fetchall()
+        con.close()
+        zero = "0x" + "0" * 40
+        return [r[0] for r in rows if r[0] != zero]
+
+    def all_positions(self, block="latest") -> dict[str, int]:
+        return self.read(self.participants(), block)
+
+    def read(self, addresses: list[str], block) -> dict[str, int]:
+        raise NotImplementedError
+
+
+class _PerUserCall(EscrowPosition):
+    selector = ""
+    word = 0
+
+    def read(self, addresses, block):
+        res = multicall([(self.contract, self.selector + _word(a)) for a in addresses], block)
+        return {a: _uint(r, self.word) for a, r in zip(addresses, res)}
+
+
+class VeCRVPosition(_PerUserCall):
+    name, symbol = "veCRV", "CRV"
+    contract = "0x5f3b5dfeb7b28cdbd7faba78963ee202a494e2a2"
+    asset = TOKEN_BASKET["CRV"]["contract"]
+    selector = "0xcbf9fe5f"   # locked(address) -> (int128 amount, uint256 end)
+    deploy_block = 10647812
+
+
+class LinkStakingPosition(_PerUserCall):
+    name, symbol = "link_staking", "LINK"
+    contract = "0xbc10f2e862ed4502144c7d632a3459f49dfcdb5e"
+    asset = TOKEN_BASKET["LINK"]["contract"]
+    selector = "0xe0d307e0"   # getStakerPrincipal(address) -> uint256
+    deploy_block = 18572190
+    # Staking v0.1; its stakers migrated into v0.2, and their LINK arrived from this contract
+    predecessors = (("0x3feb1e09b4bb0e7f0387cee092a52e85797ab889", 16083969),)
+
+
+class St1inchPosition(_PerUserCall):
+    name, symbol = "st1inch", "1INCH"
+    contract = "0x9a0c8ff858d273f57072d714bca7411d717501d7"
+    asset = TOKEN_BASKET["1INCH"]["contract"]
+    selector = "0xeed75f6d"   # depositors(address) -> (uint40 lockTime, uint40 unlockTime, uint176 amount)
+    word = 2
+    deploy_block = 16241691
+
+
+class _ShareToken(EscrowPosition):
+    def rate(self, block) -> float:
+        raise NotImplementedError
+
+    def read(self, addresses, block):
+        res = multicall([(self.share_token, BALANCE_OF + _word(a)) for a in addresses], block)
+        r = self.rate(block)
+        return {a: int(_uint(x) * r) for a, x in zip(addresses, res)}
+
+
+class XSushiPosition(_ShareToken):
+    name, symbol = "xsushi", "SUSHI"
+    contract = share_token = "0x8798249c2e607446efb7ad49ec89dd1865ff4272"
+    asset = TOKEN_BASKET["SUSHI"]["contract"]
+    deploy_block = 10801571
+
+    def rate(self, block):
+        held, supply = multicall([(self.asset, BALANCE_OF + _word(self.contract)),
+                                  (self.share_token, TOTAL_SUPPLY)], block)
+        return _uint(held) / _uint(supply) if _uint(supply) else 0.0
+
+
+class StkAavePosition(_ShareToken):
+    name, symbol = "stkAAVE", "AAVE"
+    contract = share_token = "0x4da27a545c0c5b758a6ba100e3a049001de870f5"
+    asset = TOKEN_BASKET["AAVE"]["contract"]
+    deploy_block = 10927018
+
+    def rate(self, block):
+        ret = multicall([(self.share_token, "0x4cdad506" + (10 ** 18).to_bytes(32, "big").hex())], block)[0]
+        return _uint(ret) / 1e18 if ret else 1.0   # previewRedeem(1e18); 1:1 before it existed
+
+
+class VeBALPosition(EscrowPosition):
+    name, symbol = "veBAL", "BAL"
+    contract = "0xc128a9954e6c874ea3d62ce62b468ba073093f25"
+    asset = "0x5c6ee304399dbdb9c8ef030ab642b10820db8f56"   # B-80BAL-20WETH pool token
+    vault = "0xba12222222228d8ba445958a75a0704d566bf2c8"
+    pool_id = "0x5c6ee304399dbdb9c8ef030ab642b10820db8f56000200000000000000000014"
+    deploy_block = 14457013
+
+    def bal_per_bpt(self, block) -> float:
+        bal = TOKEN_BASKET["BAL"]["contract"]
+        held, supply = multicall([(bal, BALANCE_OF + _word(self.vault)), (self.asset, TOTAL_SUPPLY)], block)
+        # The Vault holds BAL for every pool; read this pool's balance instead
+        ret = multicall([(self.vault, "0xf94d4668" + self.pool_id[2:])], block)[0]   # getPoolTokens(bytes32)
+        tokens_off = _uint(ret, 0) // 32
+        n = _uint(ret, tokens_off)
+        tokens = ["0x" + ret[32 * (tokens_off + 1 + i) + 12:32 * (tokens_off + 2 + i)].hex() for i in range(n)]
+        bal_off = _uint(ret, 1) // 32
+        balances = [_uint(ret, bal_off + 1 + i) for i in range(n)]
+        pool_bal = balances[tokens.index(bal.lower())]
+        return pool_bal / _uint(supply) if _uint(supply) else 0.0
+
+    def floor_in_deposit_units(self) -> float:
+        return super().floor_in_deposit_units() / max(self.bal_per_bpt("latest"), 1e-9)
+
+    def unseen_floor(self) -> float:
+        return super().floor_in_deposit_units() * 1.05
+
+    def read(self, addresses, block):
+        res = multicall([(self.contract, "0xcbf9fe5f" + _word(a)) for a in addresses], block)
+        r = self.bal_per_bpt(block)
+        return {a: int(_uint(x) * r) for a, x in zip(addresses, res)}
+
+
 POSITION_SOURCES = {
     "SKY": [LockstakePosition()],
+    "CRV": [VeCRVPosition()],
+    "LINK": [LinkStakingPosition()],
+    "1INCH": [St1inchPosition()],
+    "SUSHI": [XSushiPosition()],
+    "AAVE": [StkAavePosition()],
+    "BAL": [VeBALPosition()],
 }
+
+
+def unseen_position_floor(symbol: str) -> float:
+    return sum(s.unseen_floor() for s in POSITION_SOURCES.get(symbol, []))
 
 
 def position_participants(symbol: str, block="latest") -> dict[str, dict[str, int]]:
