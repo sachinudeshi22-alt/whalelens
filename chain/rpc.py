@@ -7,8 +7,9 @@ skipped contract check lets contracts leak into the cohort.
 """
 import time
 import requests
+from eth_abi import decode, encode
 
-from config import ETH_RPC_URLS
+from config import ETH_RPC_ENDPOINTS
 
 BALANCE_OF   = "0x70a08231"   # balanceOf(address)
 GET_THRESHOLD = "0xe75235b8"  # Safe.getThreshold()
@@ -47,41 +48,78 @@ def _post(url: str, payload: list[dict]) -> list[dict]:
     return body
 
 
-def batch(calls: list[tuple[str, list]], batch_size: int = 25, retries: int = 3) -> list:
+class RateLimited(RpcError):
+    pass
+
+
+def _is_rate_limit(err) -> bool:
+    msg = str(err.get("message", "") if isinstance(err, dict) else err).lower()
+    code = err.get("code") if isinstance(err, dict) else None
+    return code == 429 or "compute units per second" in msg or "rate limit" in msg or "too many requests" in msg
+
+
+def _post_paced(url: str, payload: list[dict], attempts: int = 6) -> list[dict]:
+    """POST, waiting out per-second throughput limits on the same endpoint before giving up."""
+    for attempt in range(attempts):
+        try:
+            body = _post(url, payload)
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 429:
+                time.sleep(0.5 * 2 ** attempt)
+                continue
+            raise
+        if any(isinstance(i, dict) and "error" in i and _is_rate_limit(i["error"]) for i in body):
+            time.sleep(0.5 * 2 ** attempt)
+            continue
+        return body
+    raise RateLimited(f"{_host(url)} still rate-limited after {attempts} attempts")
+
+
+def _run_chunk(url: str, max_batch: int, chunk: list[tuple[str, list]]) -> list:
+    """Run `chunk` on one endpoint, splitting into that endpoint's batch size."""
+    out = []
+    for sub_start in range(0, len(chunk), max_batch):
+        sub = chunk[sub_start:sub_start + max_batch]
+        payload = [{"jsonrpc": "2.0", "id": i, "method": m, "params": p} for i, (m, p) in enumerate(sub)]
+        by_id = {item["id"]: item for item in _post_paced(url, payload) if isinstance(item, dict)}
+        if len(by_id) != len(sub):
+            raise RpcError(f"{_host(url)} returned {len(by_id)}/{len(sub)} items")
+        for i in range(len(sub)):
+            item = by_id[i]
+            if "error" in item:
+                if sub[i][0] == "eth_call" and _is_revert(item["error"]):
+                    out.append(Reverted(item["error"].get("message")))
+                    continue
+                raise RpcError(f"{_host(url)}: {item['error']}")
+            out.append(item.get("result"))
+    return out
+
+
+def _host(url: str) -> str:
+    # Never log full URLs: keyed endpoints embed the API key in the path
+    return url.split("/")[2] if "://" in url else url
+
+
+def batch(calls: list[tuple[str, list]], retries: int = 3) -> list:
     """
     Run [(method, params), ...] and return results in the same order.
     An eth_call that reverts comes back as a `Reverted` instance instead of raising.
-    Any other per-item error triggers a retry of the whole sub-batch.
+    Any other per-item error retries the chunk on the next endpoint.
     """
-    results: list = [None] * len(calls)
-    for start in range(0, len(calls), batch_size):
-        chunk = calls[start:start + batch_size]
-        payload = [
-            {"jsonrpc": "2.0", "id": i, "method": m, "params": p}
-            for i, (m, p) in enumerate(chunk)
-        ]
+    results: list = []
+    chunk_size = max(size for _, size in ETH_RPC_ENDPOINTS)
+    for start in range(0, len(calls), chunk_size):
+        chunk = calls[start:start + chunk_size]
         last_err = None
         done = False
         for attempt in range(retries):
-            for url in ETH_RPC_URLS:
+            for url, max_batch in ETH_RPC_ENDPOINTS:
                 try:
-                    by_id = {item["id"]: item for item in _post(url, payload) if isinstance(item, dict)}
-                    if len(by_id) != len(chunk):
-                        raise RpcError(f"{url} returned {len(by_id)}/{len(chunk)} items")
-                    out = []
-                    for i in range(len(chunk)):
-                        item = by_id[i]
-                        if "error" in item:
-                            if chunk[i][0] == "eth_call" and _is_revert(item["error"]):
-                                out.append(Reverted(item["error"].get("message")))
-                                continue
-                            raise RpcError(f"{url}: {item['error']}")
-                        out.append(item.get("result"))
-                    results[start:start + len(chunk)] = out
+                    results += _run_chunk(url, max_batch, chunk)
                     done = True
                     break
                 except (requests.RequestException, RpcError, ValueError, KeyError) as e:
-                    last_err = e
+                    last_err = RpcError(f"{_host(url)}: {type(e).__name__}: {str(e).replace(url, _host(url))[:200]}")
             if done:
                 break
             time.sleep(2 ** attempt)
@@ -103,14 +141,55 @@ def get_code(addresses: list[str], block="latest") -> dict[str, str]:
     return {a.lower(): (code or "0x").lower() for a, code in zip(addresses, res)}
 
 
+# Multicall3: one eth_call runs many calls, so throughput limits (compute units per
+# call) stop mattering for bulk reads. Deployed at the same address on most chains.
+MULTICALL3 = "0xca11bde05977b3631167028862be2a173976ca11"
+MULTICALL3_DEPLOY_BLOCK = 14353601
+_AGGREGATE3 = "0x82ad56cb"   # aggregate3((address,bool,bytes)[]) -> (bool,bytes)[]
+_MULTICALL_CHUNK = 300
+_MULTICALLS_PER_REQUEST = 4
+
+
+def multicall(calls: list[tuple[str, str]], block="latest") -> list[bytes | None]:
+    """
+    Run [(to, calldata_hex), ...] through Multicall3 at `block`.
+    Returns raw return bytes per call, or None where that call reverted.
+    """
+    tag = _block_tag(block)
+    rpc_calls = []
+    for start in range(0, len(calls), _MULTICALL_CHUNK):
+        chunk = calls[start:start + _MULTICALL_CHUNK]
+        data = encode(["(address,bool,bytes)[]"],
+                      [[(to, True, bytes.fromhex(cd[2:])) for to, cd in chunk]])
+        rpc_calls.append(("eth_call", [{"to": MULTICALL3, "data": _AGGREGATE3 + data.hex()}, tag]))
+    out: list[bytes | None] = []
+    # Each aggregate3 call is ~100KB of hex; keep JSON-RPC requests well under provider body limits
+    results = []
+    for g in range(0, len(rpc_calls), _MULTICALLS_PER_REQUEST):
+        results += batch(rpc_calls[g:g + _MULTICALLS_PER_REQUEST])
+    for r in results:
+        if isinstance(r, Reverted):
+            raise RpcError(f"multicall reverted: {r}")
+        (results,) = decode(["(bool,bytes)[]"], bytes.fromhex(r[2:]))
+        out += [ret if ok else None for ok, ret in results]
+    return out
+
+
+def _supports_multicall(block) -> bool:
+    return isinstance(block, str) or block >= MULTICALL3_DEPLOY_BLOCK
+
+
 def balances_of(token: str, addresses: list[str], block="latest") -> dict[str, int]:
     """Raw (undivided) ERC-20 balances at `block`."""
-    calls = [
-        ("eth_call", [{"to": token, "data": BALANCE_OF + a.lower().replace("0x", "").rjust(64, "0")},
-                      _block_tag(block)])
-        for a in addresses
-    ]
+    datas = [BALANCE_OF + a.lower().replace("0x", "").rjust(64, "0") for a in addresses]
     out = {}
+    if _supports_multicall(block):
+        for a, ret in zip(addresses, multicall([(token, d) for d in datas], block)):
+            if ret is None:
+                raise RpcError(f"balanceOf reverted for {a} on {token}")
+            out[a.lower()] = int.from_bytes(ret[:32], "big") if ret else 0
+        return out
+    calls = [("eth_call", [{"to": token, "data": d}, _block_tag(block)]) for d in datas]
     for a, r in zip(addresses, batch(calls)):
         if isinstance(r, Reverted):
             raise RpcError(f"balanceOf reverted for {a} on {token}")

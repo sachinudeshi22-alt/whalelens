@@ -11,25 +11,18 @@ Types returned:
   safe     — contract that answers Safe.getThreshold() and getOwners()
   contract — anything else (pools, vaults, staking, bridges…) → excluded from cohort
 """
-from chain.rpc import (
-    EIP7702_PREFIX, GET_OWNERS, GET_THRESHOLD, Reverted, batch, get_code,
-)
+from chain.rpc import EIP7702_PREFIX, GET_OWNERS, GET_THRESHOLD, get_code, multicall
 
 KEEP_TYPES = {"eoa", "eip7702", "safe"}
 
 
-def _looks_like_safe(results: tuple) -> bool:
-    threshold, owners = results
-    if isinstance(threshold, Reverted) or isinstance(owners, Reverted):
+def _looks_like_safe(threshold: bytes | None, owners: bytes | None) -> bool:
+    """Both calls must succeed: threshold ≥ 1 and a non-empty owner list."""
+    if not threshold or not owners or len(threshold) != 32 or len(owners) < 64:
         return False
-    if not threshold or not owners or len(threshold) != 66:
-        return False
-    try:
-        # getOwners() returns a dynamic address[]: offset word + length word + entries
-        n_owners = int(owners[66:130], 16) if len(owners) >= 130 else 0
-        return int(threshold, 16) >= 1 and n_owners >= 1
-    except ValueError:
-        return False
+    # getOwners() returns a dynamic address[]: offset word + length word + entries
+    n_owners = int.from_bytes(owners[32:64], "big")
+    return int.from_bytes(threshold, "big") >= 1 and 1 <= n_owners <= 1000
 
 
 def classify(addresses: list[str]) -> dict[str, str]:
@@ -47,9 +40,8 @@ def classify(addresses: list[str]) -> dict[str, str]:
     if probe:
         calls = []
         for addr in probe:
-            calls.append(("eth_call", [{"to": addr, "data": GET_THRESHOLD}, "latest"]))
-            calls.append(("eth_call", [{"to": addr, "data": GET_OWNERS}, "latest"]))
-        res = batch(calls)
+            calls += [(addr, GET_THRESHOLD), (addr, GET_OWNERS)]
+        res = multicall(calls)   # reverts come back as None
         for i, addr in enumerate(probe):
-            types[addr] = "safe" if _looks_like_safe((res[2 * i], res[2 * i + 1])) else "contract"
+            types[addr] = "safe" if _looks_like_safe(res[2 * i], res[2 * i + 1]) else "contract"
     return types

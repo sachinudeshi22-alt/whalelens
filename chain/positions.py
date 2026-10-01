@@ -17,7 +17,7 @@ Only sources with a verified per-owner read are listed here. Current coverage:
 import json
 
 from chain.blockscout import get_logs
-from chain.rpc import balances_of, batch
+from chain.rpc import balances_of, multicall
 from db.schema import get_connection
 
 
@@ -58,14 +58,10 @@ class LockstakePosition:
         """Raw staked amount for every owner that ever opened an urn."""
         urns = self._sync_urns()
         pairs = [(owner, urn) for owner, us in urns.items() for urn in us]
-        tag = block if isinstance(block, str) else hex(block)
-        res = batch([
-            ("eth_call", [{"to": self.VAT, "data": self.URNS_SELECTOR + self.ILK[2:] + _word(urn)}, tag])
-            for _, urn in pairs
-        ])
+        res = multicall([(self.VAT, self.URNS_SELECTOR + self.ILK[2:] + _word(urn)) for _, urn in pairs], block)
         out: dict[str, int] = {}
-        for (owner, _), r in zip(pairs, res):
-            ink = int(r[2:66], 16) if isinstance(r, str) and len(r) >= 66 else 0
+        for (owner, _), ret in zip(pairs, res):
+            ink = int.from_bytes(ret[:32], "big") if ret else 0
             out[owner] = out.get(owner, 0) + ink
         return out
 

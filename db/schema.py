@@ -82,6 +82,19 @@ def init_db():
             UNIQUE(source, owner, idx)
         );
 
+        -- First inbound transfer of each token per address. It never changes, so it's
+        -- traced once and reused (saves most Blockscout credits on daily refreshes).
+        CREATE TABLE IF NOT EXISTS first_funders (
+            token_symbol    TEXT NOT NULL,
+            address         TEXT NOT NULL,
+            funder          TEXT,                 -- NULL when untraceable (see note)
+            funder_labels   TEXT,                 -- JSON list, as seen when traced
+            block_number    INTEGER,
+            note            TEXT,                 -- e.g. "too many transfers to trace"
+            traced_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(token_symbol, address)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_holders_token    ON holders(token_symbol);
         CREATE INDEX IF NOT EXISTS idx_snapshots_token  ON holder_snapshots(token_symbol);
         CREATE INDEX IF NOT EXISTS idx_snapshots_date   ON holder_snapshots(snapshot_date);

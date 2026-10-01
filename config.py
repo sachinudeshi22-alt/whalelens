@@ -12,17 +12,25 @@ ETHERSCAN_BASE_URL = "https://api.etherscan.io/api"
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 DUNE_BASE_URL      = "https://api.dune.com/api/v1"
 BLOCKSCOUT_BASE_URL = "https://eth.blockscout.com/api/v2"
+# Blockscout PRO API (needs BLOCKSCOUT_API_KEY from dev.blockscout.com). 5 req/s,
+# 20 credits per request from a 100k allowance; the client falls back to the free
+# endpoint above once credits drop below the reserve.
+BLOCKSCOUT_PRO_URL = "https://api.blockscout.com/1/api/v2"
+BLOCKSCOUT_CREDIT_RESERVE = 5_000
 
 # Where fetch_holders.py gets the candidate top-holder list:
 #   "blockscout" — free, no key, current balances + public address labels
 #   "dune"       — transfer-sum SQL; needs a Dune plan that can run queries
 #                  (the account went read-only on the free tier by 2026-09)
 HOLDER_SOURCE = "blockscout"
-# Tried in order. Must be archive-capable: verify_balances.py reads historical state.
-# (publicnode now rejects archive requests without a personal token.)
-ETH_RPC_URLS = [
-    "https://eth.drpc.org",
-    "https://eth-mainnet.public.blastapi.io",
+# (url, max calls per JSON-RPC batch), tried in order. Must be archive-capable:
+# verify_balances.py and the history backfill read historical state.
+# ETH_RPC_URL (e.g. an Alchemy endpoint) goes first when set; the free public
+# endpoints are fallbacks. (publicnode rejects archive requests without a token.)
+ETH_RPC_URL = os.getenv("ETH_RPC_URL", "").strip()
+ETH_RPC_ENDPOINTS = ([(ETH_RPC_URL, 200)] if ETH_RPC_URL else []) + [
+    ("https://eth.drpc.org", 25),
+    ("https://eth-mainnet.public.blastapi.io", 25),
 ]
 
 DB_PATH = "data/whale_tracker.db"

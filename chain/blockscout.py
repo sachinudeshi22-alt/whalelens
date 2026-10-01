@@ -1,31 +1,53 @@
 """
 Blockscout client: holder lists, logs, and token transfers, with rate-limit backoff.
 
-The free tier rate-limits aggressively ("Too many requests"). Setting
-BLOCKSCOUT_API_KEY in .env raises the limit; without it we back off and retry.
+With BLOCKSCOUT_API_KEY set, requests go to the PRO API (5 req/s, metered in
+credits) until credits fall below BLOCKSCOUT_CREDIT_RESERVE, then fall back to
+the free endpoint. The free endpoint rate-limits aggressively and locks out
+bursts, so it is throttled harder.
 """
 import time
 import requests
 
-from config import BLOCKSCOUT_BASE_URL, BLOCKSCOUT_API_KEY
+from config import (
+    BLOCKSCOUT_API_KEY, BLOCKSCOUT_BASE_URL, BLOCKSCOUT_CREDIT_RESERVE, BLOCKSCOUT_PRO_URL,
+)
 
 class BlockscoutError(RuntimeError):
     pass
 
 
-# Keyless limit is 10 requests per window, and bursting past it earns a multi-minute
-# lockout, so stay well under it rather than relying on retries.
-_MIN_INTERVAL = 0.35 if not BLOCKSCOUT_API_KEY else 0.1
+# Free endpoint: 10 requests per window, and bursting past it earns a multi-minute
+# lockout, so stay well under it. PRO: 5 requests per second.
+_FREE_INTERVAL = 0.35
+_PRO_INTERVAL = 0.22
 _MAX_LOCKOUT_WAIT = 900
 _last_request = 0.0
+_use_pro = bool(BLOCKSCOUT_API_KEY)
+credits_remaining: int | None = None
 
 
-def _throttle():
+def _base() -> str:
+    return BLOCKSCOUT_PRO_URL if _use_pro else BLOCKSCOUT_BASE_URL
+
+
+def _throttle(pro: bool):
     global _last_request
-    wait = _MIN_INTERVAL - (time.time() - _last_request)
+    wait = (_PRO_INTERVAL if pro else _FREE_INTERVAL) - (time.time() - _last_request)
     if wait > 0:
         time.sleep(wait)
     _last_request = time.time()
+
+
+def _track_credits(resp: requests.Response) -> None:
+    global credits_remaining, _use_pro
+    raw = resp.headers.get("x-credits-remaining")
+    if raw is None:
+        return
+    credits_remaining = int(raw)
+    if _use_pro and credits_remaining < BLOCKSCOUT_CREDIT_RESERVE:
+        _use_pro = False
+        print(f"    Blockscout PRO credits at {credits_remaining:,} — switching to the free endpoint")
 
 
 def _reset_seconds(resp: requests.Response) -> float:
@@ -37,13 +59,16 @@ def _reset_seconds(resp: requests.Response) -> float:
 
 def _get(url: str, params: dict | None = None, retries: int = 6) -> dict:
     params = dict(params or {})
-    if BLOCKSCOUT_API_KEY:
+    pro = url.startswith(BLOCKSCOUT_PRO_URL)
+    if pro:
         params["apikey"] = BLOCKSCOUT_API_KEY
     last = None
     for attempt in range(retries):
-        _throttle()
+        _throttle(pro)
         try:
             resp = requests.get(url, params=params, timeout=60)
+            if pro:
+                _track_credits(resp)
             body = resp.json() if resp.content else {}
             limited = resp.status_code == 429 or (
                 isinstance(body, dict) and "too many requests" in str(body.get("message", "")).lower())
@@ -53,6 +78,8 @@ def _get(url: str, params: dict | None = None, retries: int = 6) -> dict:
                 time.sleep(wait + 1)
                 last = BlockscoutError("rate limited")
                 continue
+            if pro and resp.status_code in (401, 402):
+                raise BlockscoutError(f"PRO API refused the key ({resp.status_code})")
             resp.raise_for_status()
             if resp.headers.get("x-ratelimit-remaining") == "0":
                 time.sleep(_reset_seconds(resp))
@@ -77,7 +104,7 @@ def token_holders(contract: str, limit: int) -> list[dict]:
     Top holders by current wallet balance (50/page).
     Each row: {address: str, value: int (raw), labels: list[str]}
     """
-    url = f"{BLOCKSCOUT_BASE_URL}/tokens/{contract}/holders"
+    url = f"{_base()}/tokens/{contract}/holders"
     rows, params = [], {}
     while len(rows) < limit:
         data = _get(url, params)
@@ -103,7 +130,7 @@ def get_logs(address: str, topic0: str, from_block: int = 0) -> list[dict]:
     filter by topic server-side locks clients out for 15 minutes at a time.
     Returned logs use the Etherscan-style shape: {topics, data, blockNumber (hex), ...}.
     """
-    url = f"{BLOCKSCOUT_BASE_URL}/addresses/{address}/logs"
+    url = f"{_base()}/addresses/{address}/logs"
     out, params = [], {}
     while True:
         data = _get(url, params)
@@ -131,7 +158,7 @@ def first_inflows(token: str, address: str, n: int = 1, max_pages: int = 10) -> 
     The v2 API lists newest first, so this pages to the end; raises TooManyTransfers
     past `max_pages` (50 transfers/page) rather than guessing.
     """
-    url = f"{BLOCKSCOUT_BASE_URL}/addresses/{address}/token-transfers"
+    url = f"{_base()}/addresses/{address}/token-transfers"
     base = {"type": "ERC-20", "filter": "to", "token": token}
     items, params = [], dict(base)
     for _ in range(max_pages):
@@ -166,6 +193,6 @@ def metadata_labels(addresses: list[str], chain_id: int = 1) -> dict[str, list[s
 
 def address_info(address: str) -> dict:
     """{is_contract, labels} for one address — labels include public metadata tags."""
-    data = _get(f"{BLOCKSCOUT_BASE_URL}/addresses/{address}")
+    data = _get(f"{_base()}/addresses/{address}")
     labels = address_labels(data) + metadata_labels([address])[address.lower()]
     return {"is_contract": bool(data.get("is_contract")), "labels": list(dict.fromkeys(labels))}
