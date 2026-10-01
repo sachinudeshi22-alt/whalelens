@@ -8,7 +8,9 @@ import json
 import re
 from collections import Counter
 
-from config import INSIDER_LABEL_KEYWORDS, INSIDER_SOURCES, NEUTRAL_FUNDERS
+from config import (
+    GENERIC_LABELS, INSIDER_LABEL_KEYWORDS, INSIDER_SOURCES, KNOWN_EXCLUSIONS, NEUTRAL_FUNDERS,
+)
 from chain.blockscout import TooManyTransfers, address_info, first_inflows
 from chain.rpc import GET_OWNERS, multicall
 from db.schema import get_connection
@@ -19,8 +21,15 @@ _funder_cache: dict[str, dict] = {}
 
 def insider_label(labels: list[str]) -> str | None:
     for label in labels:
-        if _INSIDER_RE.search(label):
-            return label
+        low = label.lower().strip()
+        if low in GENERIC_LABELS:
+            continue
+        m = _INSIDER_RE.search(label)
+        if not m:
+            continue
+        if m.group(1).lower() == "deployer" and ":" not in label:
+            continue   # bare "Deployer" tags are generic; require "<Project>: Deployer"
+        return label
     return None
 
 
@@ -137,7 +146,7 @@ def group_safes(holders: list[dict]) -> None:
 
 def suggest_insider_sources(symbol: str, holders: list[dict]) -> list[tuple[str, int]]:
     """Funders that seeded 3+ holders and aren't already known — candidates for manual review."""
-    known = INSIDER_SOURCES.get(symbol, set()) | NEUTRAL_FUNDERS
+    known = INSIDER_SOURCES.get(symbol, set()) | NEUTRAL_FUNDERS | {a.lower() for a in KNOWN_EXCLUSIONS}
     counts = Counter(h["first_funder"] for h in holders
                      if h.get("first_funder") and h["first_funder"] not in known
                      and h["first_funder"] != "0x" + "0" * 40)

@@ -93,6 +93,10 @@ INSIDER_LABEL_KEYWORDS = [
     "treasury", "vesting", "noncirculating", "non-circulating", "foundation",
     "team", "deployer", "investor", "investors", "token manager", "multisig: team",
 ]
+# Generic tags Blockscout puts on huge numbers of unrelated addresses (any address
+# that ever deployed a contract is a "Contract Deployer"). Never insider evidence;
+# a deployer label only counts when project-specific, e.g. "Lido: Deployer 1".
+GENERIC_LABELS = {"contract deployer", "beacon depositor", "ethereum torchbearer"}
 
 # Per-token addresses that distribute insider allocations. Every entry needs evidence.
 INSIDER_SOURCES = {
@@ -101,6 +105,11 @@ INSIDER_SOURCES = {
         # Safes on 2020-12-17 (token launch) and round-number grants (10M, 7x5M, 2M, 1.93M)
         # to ten Safes sharing the same 5 signers on 2026-01-01.
         "0xf73a1260d222f447210581ddf212d915c09a3249",
+    },
+    "CRV": {
+        # Curve founder Michael Egorov's wallet (public label; also Curve's deployer).
+        # First CRV from here means a team allocation or a founder sale.
+        "0x7a16ff8270133f063aab6c9977183d9e72835428",
     },
 }
 
