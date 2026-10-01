@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import TOKEN_BASKET
 from db.schema import init_db, get_connection
 from chain.rpc import latest_block
-from chain.transfers import scan
+from chain.transfers import TransfersUnavailable, scan
 
 
 def main():
@@ -34,10 +34,19 @@ def main():
     from_block, to_block = row[0], latest_block()
 
     basket = {args.symbol: TOKEN_BASKET[args.symbol]} if args.symbol else TOKEN_BASKET
+    failed = []
     for symbol, token in basket.items():
         print(f"{symbol}: scanning blocks {from_block:,}–{to_block:,} (from {start_date})")
-        n = scan(symbol, token["contract"], token["decimals"], from_block, to_block)
+        try:
+            n = scan(symbol, token["contract"], token["decimals"], from_block, to_block)
+        except TransfersUnavailable as e:
+            # Progress is checkpointed per chunk; a re-run resumes where this stopped
+            print(f"{symbol}: FAILED ({e}) — re-run to resume")
+            failed.append(symbol)
+            continue
         print(f"{symbol}: done, {n:,} transfers this run")
+    if failed:
+        sys.exit(f"Incomplete: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

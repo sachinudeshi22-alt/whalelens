@@ -11,12 +11,11 @@ from collections import Counter
 from config import (
     GENERIC_LABELS, INSIDER_LABEL_KEYWORDS, INSIDER_SOURCES, KNOWN_EXCLUSIONS, NEUTRAL_FUNDERS,
 )
-from chain.blockscout import TooManyTransfers, address_info, first_inflows
+from chain.blockscout import TooManyTransfers, first_inflows
 from chain.rpc import GET_OWNERS, multicall
 from db.schema import get_connection
 
 _INSIDER_RE = re.compile(r"\b(" + "|".join(re.escape(k) for k in INSIDER_LABEL_KEYWORDS) + r")\b", re.I)
-_funder_cache: dict[str, dict] = {}
 
 
 def insider_label(labels: list[str]) -> str | None:
@@ -31,12 +30,6 @@ def insider_label(labels: list[str]) -> str | None:
             continue   # bare "Deployer" tags are generic; require "<Project>: Deployer"
         return label
     return None
-
-
-def _funder_info(addr: str) -> dict:
-    if addr not in _funder_cache:
-        _funder_cache[addr] = address_info(addr)
-    return _funder_cache[addr]
 
 
 def _short(addr: str) -> str:
@@ -84,8 +77,9 @@ def trace_funding(symbol: str, token: dict, h: dict) -> None:
         return
     if funder == "0x" + "0" * 40:
         return   # minted directly — not insider evidence on its own (e.g. SKY conversions)
-    # Transfer records carry the funder's public tags; fall back to a lookup if absent
-    label = insider_label(funder_labels) or insider_label(_funder_info(funder)["labels"])
+    # Transfer records carry the funder's public tags (same metadata service as a
+    # direct lookup), so no second request per funder
+    label = insider_label(funder_labels)
     if label:
         h["insider_reason"] = f"first {symbol} received from '{label}' ({_short(funder)})"
 

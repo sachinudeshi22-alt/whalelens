@@ -22,7 +22,7 @@ class TransfersUnavailable(RuntimeError):
     pass
 
 
-def _call(params: dict, attempts: int = 8) -> dict:
+def _call(params: dict, attempts: int = 15) -> dict:
     if "alchemy.com" not in ETH_RPC_URL:
         raise TransfersUnavailable("ETH_RPC_URL must be an Alchemy endpoint for transfer scans")
     for attempt in range(attempts):
@@ -43,7 +43,7 @@ def _call(params: dict, attempts: int = 8) -> dict:
                 raise TransfersUnavailable(f"alchemy_getAssetTransfers: {err}")
             return body["result"]
         except (requests.RequestException, ValueError):
-            time.sleep(min(2 ** attempt, 30))
+            time.sleep(min(2 ** attempt, 60))
     raise TransfersUnavailable("alchemy_getAssetTransfers kept failing")
 
 

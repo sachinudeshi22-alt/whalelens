@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WhaleLens</title>
+  <meta name="description" content="What the largest independent holders and the insiders of mid-cap DeFi tokens are doing, verified on-chain.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="#/">WhaleLens</a>
+      <nav class="main" aria-label="Main">
+        <a href="#/" id="nav-overview">Overview</a>
+        <a href="methodology.html">Methodology</a>
+      </nav>
+      <button class="theme-btn" id="theme-btn" type="button" aria-label="Toggle dark mode">Theme</button>
+    </div>
+  </header>
+
+  <main class="wrap" id="app" aria-live="polite">
+    <p class="sub">Loading…</p>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <p>Holdings are read directly from Ethereum at the first block of each UTC day. Address labels come from
+        <a href="https://eth.blockscout.com" rel="noopener">Blockscout</a> and the
+        <a href="https://www.openlabelsinitiative.org" rel="noopener">Open Labels Initiative</a>.
+        See the <a href="methodology.html">methodology</a> for every rule and known limitation.</p>
+      <p>Not financial advice. Wallet classifications are evidence-based but can be wrong. Ethereum mainnet only.</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

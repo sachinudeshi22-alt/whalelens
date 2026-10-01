@@ -133,6 +133,48 @@ def init_db():
             next_block      INTEGER NOT NULL      -- resume point
         );
 
+        -- Point-in-time cohorts (scripts/build_cohorts.py): who the whales were on each date.
+        CREATE TABLE IF NOT EXISTS cohort_daily (
+            token_symbol    TEXT NOT NULL,
+            date            TEXT NOT NULL,
+            address         TEXT NOT NULL,
+            category        TEXT NOT NULL,        -- whale | insider
+            rank            INTEGER,              -- whales only
+            total           REAL NOT NULL,        -- holdings that day
+            UNIQUE(token_symbol, date, address)
+        );
+
+        -- Whether each date's cohort is provably complete (see build_cohorts.py).
+        CREATE TABLE IF NOT EXISTS cohort_quality (
+            token_symbol    TEXT NOT NULL,
+            date            TEXT NOT NULL,
+            nth_whale_total REAL,
+            outside_bound   REAL,                 -- max holding of any address outside the universe
+            complete        INTEGER NOT NULL,
+            UNIQUE(token_symbol, date)
+        );
+
+        -- Candidate universe per token, with why each address is in it and why excluded.
+        CREATE TABLE IF NOT EXISTS universe (
+            token_symbol    TEXT NOT NULL,
+            address         TEXT NOT NULL,
+            why             TEXT,
+            excluded        TEXT,
+            wallet_type     TEXT,
+            labels          TEXT,
+            insider_reason  TEXT,
+            entity_id       TEXT,
+            UNIQUE(token_symbol, address)
+        );
+
+        CREATE TABLE IF NOT EXISTS supply_daily (
+            token_symbol    TEXT NOT NULL,
+            date            TEXT NOT NULL,
+            supply          REAL NOT NULL,
+            UNIQUE(token_symbol, date)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cohort_daily ON cohort_daily(token_symbol, date);
         CREATE INDEX IF NOT EXISTS idx_holdings_daily_tok_date ON holdings_daily(token_symbol, date);
         CREATE INDEX IF NOT EXISTS idx_holders_token    ON holders(token_symbol);
         CREATE INDEX IF NOT EXISTS idx_snapshots_token  ON holder_snapshots(token_symbol);

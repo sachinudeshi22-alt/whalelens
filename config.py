@@ -43,6 +43,13 @@ TOP_HOLDER_COHORT_SIZE = 50
 # stakers to add as candidates alongside the wallet top-holder list.
 POSITION_CANDIDATE_LIMIT = 200
 
+# Point-in-time cohorts (scripts/build_cohorts.py): addresses that sent at least this
+# fraction of today's smallest whale holding during the scanned period join the universe.
+UNIVERSE_SENT_FRACTION = 0.25
+# Addresses with at least this many transfers of the token in the scanned period
+# (~a year) behave like exchanges or market makers, not holders, and are excluded.
+HIGH_ACTIVITY_TRANSFERS = 2000
+
 # Flag a holder when the source's balance and on-chain balanceOf() disagree by more than this.
 BALANCE_MISMATCH_TOLERANCE = 0.01
 
@@ -90,7 +97,7 @@ EXCLUDE_LABEL_KEYWORDS = [
 #   3. it is a Safe sharing at least half its signers with an insider Safe.
 # Keywords match whole words, case-insensitive.
 INSIDER_LABEL_KEYWORDS = [
-    "treasury", "vesting", "noncirculating", "non-circulating", "foundation",
+    "treasury", "vesting", "vested", "noncirculating", "non-circulating", "foundation",
     "team", "deployer", "investor", "investors", "token manager", "multisig: team",
 ]
 # Generic tags Blockscout puts on huge numbers of unrelated addresses (any address
