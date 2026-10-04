@@ -151,9 +151,15 @@ class EscrowPosition:
         """Convert a token-unit amount to the units deposits are recorded in."""
         return token_amount
 
+    def max_position(self) -> float | None:
+        """Contract-enforced per-user cap in token units, if the escrow has one."""
+        return None
+
     def unseen_above(self, min_position: float) -> float:
         """Max position (token units) of a participant left out by participants(min_position)."""
-        return max(min_position, self.floor_in_deposit_units()) * 1.05   # rewards allowance
+        bound = max(min_position, self.floor_in_deposit_units()) * 1.05   # rewards allowance
+        cap = self.max_position()
+        return min(bound, cap) if cap is not None else bound
 
     def participants(self, min_position: float | None = None) -> list[str]:
         """Participants whose total deposits could make their position ≥ min_position (token units)."""
@@ -200,6 +206,10 @@ class LinkStakingPosition(_PerUserCall):
     deploy_block = 18572190
     # Staking v0.1; its stakers migrated into v0.2, and their LINK arrived from this contract
     predecessors = (("0x3feb1e09b4bb0e7f0387cee092a52e85797ab889", 16083969),)
+
+    def max_position(self):
+        ret = multicall([(self.contract, "0xc4ef722a")])[0]   # getStakerLimits() -> (min, max)
+        return _uint(ret, 1) / 1e18 if ret else None          # 15,000 LINK on 2026-10-04
 
 
 class St1inchPosition(_PerUserCall):

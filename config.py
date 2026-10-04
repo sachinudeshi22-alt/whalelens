@@ -45,6 +45,9 @@ POSITION_CANDIDATE_LIMIT = 200
 # Escrow positions (veCRV, stkAAVE, …): only participants who deposited at least this
 # share of total supply are tracked. Untracked participants' positions are bounded by it.
 POSITION_MIN_DEPOSIT_SHARE = 0.00001
+# Point-in-time universe: stakers join when their deposits reach this fraction of the
+# sent threshold. Lower = more stakers tracked, tighter completeness bound.
+STAKER_INCLUSION_FRACTION = 0.1
 
 # Point-in-time cohorts (scripts/build_cohorts.py): addresses that sent at least this
 # fraction of today's smallest whale holding during the scanned period join the universe.

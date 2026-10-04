@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
     TOKEN_BASKET, TOP_HOLDER_COHORT_SIZE, KNOWN_EXCLUSIONS, RESERVED_ADDRESSES,
-    UNIVERSE_SENT_FRACTION, HIGH_ACTIVITY_TRANSFERS,
+    UNIVERSE_SENT_FRACTION, HIGH_ACTIVITY_TRANSFERS, STAKER_INCLUSION_FRACTION,
 )
 from db.schema import init_db, get_connection
 from chain.blockscout import metadata_labels
@@ -65,15 +65,16 @@ def build_universe(con, symbol: str) -> tuple[dict[str, dict], float, float]:
     min_whale = con.execute("SELECT MIN(balance_at_pull) FROM holders WHERE token_symbol = ? AND category = 'whale'",
                             (symbol,)).fetchone()[0]
     base = UNIVERSE_SENT_FRACTION * min_whale
-    # Stakers join only if their deposits could reach `base`; a staker left out holds at
-    # most unseen_above(base) staked, which joins the bound alongside the sent threshold
-    sent_threshold = base + sum(src.unseen_above(base) for src in POSITION_SOURCES.get(symbol, []))
+    # Stakers join when their deposits reach stake_min; a staker left out holds at most
+    # unseen_above(stake_min) staked (or the pool's per-user cap), which joins the bound
+    stake_min = STAKER_INCLUSION_FRACTION * base
+    sent_threshold = base + sum(src.unseen_above(stake_min) for src in POSITION_SOURCES.get(symbol, []))
 
     uni: dict[str, dict] = {}
     for addr, _, labels in raw:
         uni[addr] = {"why": "top holder list", "labels": json.loads(labels or "[]")}
     for source in POSITION_SOURCES.get(symbol, []):
-        for owner in source.participants(min_position=base):
+        for owner in source.participants(min_position=stake_min):
             uni.setdefault(owner, {"why": f"{source.name} participant", "labels": None})
     for addr, sent in con.execute("SELECT address, sent FROM transfer_totals WHERE token_symbol = ? AND sent >= ?",
                                   (symbol, sent_threshold)):
