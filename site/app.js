@@ -444,9 +444,9 @@
       el("td", { class: "reason", text: h.reason }),
       el("td", { class: "num" }, deltaCell(h.d30))));
 
-    const notes = [...d.notes];
+    const notes = d.notes.map((n) => (typeof n === "string" ? { text: n } : n));
     if (d.quality.proven < d.quality.days)
-      notes.push(`Completeness is proven for ${d.quality.proven} of ${d.quality.days} days; on the rest, a wallet outside our candidate list could in principle have ranked in the top 50.`);
+      notes.push({ text: `Completeness is proven for ${d.quality.proven} of ${d.quality.days} days; on the rest, a wallet outside our candidate list could in principle have ranked in the top 50.` });
 
     show(
       el("p", { class: "sub" }, el("a", { href: "#/", text: "← All tokens" })),
@@ -468,7 +468,8 @@
         el("div", { class: "tile" }, el("div", { class: "label", text: "Total supply" }),
           el("div", { class: "value", text: compact(st.supply) }),
           el("div", { class: "foot", text: `as of ${fmtDate(d.as_of)}` }))),
-      notes.length ? el("div", { class: "note", role: "note" }, notes.map((n) => el("p", { text: n }))) : null,
+      notes.length ? el("div", { class: "note", role: "note" }, notes.map((n) => el("p", {}, n.text,
+        n.url && /^https:\/\//.test(n.url) ? [" ", el("a", { href: n.url, rel: "noopener", target: "_blank", text: "Source" })] : null))) : null,
       chartCard("Share of supply held", "Each day's top 50 whales, ranked that day. Insiders are every wallet classed as insider.",
         lineChart(dates, series), legend, shareTable),
       chartCard("Weekly whale flow", "Change in holdings of the wallets that were whales at the start of each week, as a share of supply.",

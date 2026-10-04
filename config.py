@@ -136,6 +136,29 @@ NEUTRAL_FUNDERS = {
     "0xa9d1e08c7793af67e9d92fe308d5697fb81d3e43",
 }
 
+# Addresses holding supply that is committed to someone else (distribution reserves,
+# escrows). Excluded from whales AND insiders, with the public reason shown on the site.
+RESERVED_ADDRESSES = {
+    # Synthetix SIP-423 (sUSD retirement): 236,464,356 SNX minted 2026-07-06 by the
+    # protocolDAO (tx 0x0bb737a8…) = 59,116,089 sUSD × 4, snapshot at block 25,473,065.
+    # Owed to former sUSD holders: 1-year lock then 1-year linear vest from the freeze.
+    "0x3265ff13f29fe2dd7501c608b914bfa5e1ffcf6d": "Synthetix SIP-423 reserve for former sUSD holders",
+}
+
+# Documented supply events, shown on the token page instead of the generic
+# "supply changed" note for the same date.
+TOKEN_NOTES = {
+    "SNX": [{
+        "date": "2026-07-06",
+        "text": ("Total supply rose 68.6% on 2026-07-06 when Synthetix governance minted 236,464,356 SNX "
+                 "under SIP-423, which retires sUSD at 4 SNX per sUSD. The new SNX sits in a reserve owed to "
+                 "former sUSD holders: locked for a year, then vested over the following year, so roughly "
+                 "236M SNX begins flowing to those holders from mid-2027. The reserve is excluded from both "
+                 "whales and insiders."),
+        "url": "https://sips.synthetix.io/sips/sip-423",
+    }],
+}
+
 # Addresses to always exclude from the holder cohort.
 # Covers: exchanges, bridges, Chainlink staking contracts, LP contracts, zero address.
 # Expand this list as you identify more contracts in the top-holder results.

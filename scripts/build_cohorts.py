@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
-    TOKEN_BASKET, TOP_HOLDER_COHORT_SIZE, KNOWN_EXCLUSIONS,
+    TOKEN_BASKET, TOP_HOLDER_COHORT_SIZE, KNOWN_EXCLUSIONS, RESERVED_ADDRESSES,
     UNIVERSE_SENT_FRACTION, HIGH_ACTIVITY_TRANSFERS,
 )
 from db.schema import init_db, get_connection
@@ -50,7 +50,7 @@ from chain.positions import POSITION_SOURCES, unseen_position_floor
 from backfill_history import record_day
 from fetch_holders import _excluded_by_label
 
-_EXCLUSION_SET = {a.lower() for a in KNOWN_EXCLUSIONS}
+_EXCLUSION_SET = {a.lower() for a in KNOWN_EXCLUSIONS} | {a.lower() for a in RESERVED_ADDRESSES}
 
 
 def build_universe(con, symbol: str) -> tuple[dict[str, dict], float, float]:
@@ -90,7 +90,9 @@ def filter_universe(con, symbol: str, uni: dict[str, dict]) -> list[str]:
         "SELECT address, n_out + n_in FROM transfer_totals WHERE token_symbol = ?", (symbol,))}
     candidates, counts = [], {"known": 0, "exchange label": 0, "high activity": 0, "contract": 0}
     for addr, info in uni.items():
-        if addr in _EXCLUSION_SET:
+        if addr in RESERVED_ADDRESSES:
+            info["excluded"] = RESERVED_ADDRESSES[addr]; counts["known"] += 1
+        elif addr in _EXCLUSION_SET:
             info["excluded"] = "known address"; counts["known"] += 1
         elif _excluded_by_label(info["labels"]):
             info["excluded"] = f"exchange label '{_excluded_by_label(info['labels'])}'"; counts["exchange label"] += 1

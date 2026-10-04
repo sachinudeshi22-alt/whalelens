@@ -35,6 +35,7 @@ from config import (
     TOP_HOLDER_RAW_LIMIT,
     TOP_HOLDER_COHORT_SIZE,
     KNOWN_EXCLUSIONS,
+    RESERVED_ADDRESSES,
     BALANCE_MISMATCH_TOLERANCE,
     POSITION_CANDIDATE_LIMIT,
 )
@@ -259,7 +260,7 @@ def add_position_candidates(symbol: str, token: dict, rows: list[dict],
 # Exclusion filter — shows full funnel
 # ---------------------------------------------------------------------------
 
-_EXCLUSION_SET = {a.lower() for a in KNOWN_EXCLUSIONS}
+_EXCLUSION_SET = {a.lower() for a in KNOWN_EXCLUSIONS} | {a.lower() for a in RESERVED_ADDRESSES}
 
 
 def _excluded_by_label(labels: list[str]) -> str | None:

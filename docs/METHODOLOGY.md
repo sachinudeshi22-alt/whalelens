@@ -21,6 +21,10 @@ A candidate is dropped when:
   exchange keyword (`EXCLUDE_LABEL_KEYWORDS`): exchange hot, cold and deposit
   wallets for Binance, Coinbase, Kraken, OKX and others. Labels come from
   Blockscout and the [Open Labels Initiative](https://www.openlabelsinitiative.org).
+- **It holds supply committed to someone else.** Distribution reserves and escrows,
+  such as the Synthetix SIP-423 reserve owed to former sUSD holders, are excluded from
+  both whales and insiders. Each one is listed with its evidence in
+  `RESERVED_ADDRESSES`.
 - **It's a contract that isn't a wallet.** We keep plain wallets (EOAs), wallets
   that use an EIP-7702 delegation, and Safe multisigs. We drop everything else:
   pools, vaults, staking contracts, bridges (`chain/classify.py`).

@@ -19,7 +19,7 @@ import markdown
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from config import TOKEN_BASKET
+from config import TOKEN_BASKET, TOKEN_NOTES
 from db.schema import init_db, get_connection
 from chain.rpc import multicall
 
@@ -43,6 +43,12 @@ def supply_series(con, symbol: str) -> dict[str, float]:
                     (symbol, d, have[d]))
     con.commit()
     return have
+
+
+def _documented_near(day: str, documented: dict, slack_days: int = 2) -> bool:
+    """A daily snapshot shows a jump on the day after the event, so match within a few days."""
+    d = date.fromisoformat(day)
+    return any(abs((d - date.fromisoformat(k)).days) <= slack_days for k in documented)
 
 
 def cohort_change(con, symbol: str, start: str, end: str, category: str = "whale") -> dict | None:
@@ -130,12 +136,13 @@ def export_token(con, symbol: str) -> dict | None:
         insiders.append({"address": addr, "total": total, "share": total / supply[latest],
                          "reason": reason, "d30": d30(addr, total)})
 
-    notes = []
+    documented = {n["date"]: n for n in TOKEN_NOTES.get(symbol, [])}
+    notes = [{"text": n["text"], "url": n.get("url")} for n in documented.values()]
     sd = sorted(supply.items())
     for (d0, s0), (d1, s1) in zip(sd, sd[1:]):
-        if s0 and abs(s1 - s0) / s0 > _SUPPLY_JUMP:
-            notes.append(f"Total supply changed {(s1 - s0) / s0:+.1%} on {d1} "
-                         f"({s0:,.0f} → {s1:,.0f}). Share-of-supply figures shift on that date.")
+        if s0 and abs(s1 - s0) / s0 > _SUPPLY_JUMP and not _documented_near(d1, documented):
+            notes.append({"text": f"Total supply changed {(s1 - s0) / s0:+.1%} on {d1} "
+                                  f"({s0:,.0f} → {s1:,.0f}). Share-of-supply figures shift on that date."})
     q = con.execute("SELECT COUNT(*), SUM(complete) FROM cohort_quality WHERE token_symbol = ?", (symbol,)).fetchone()
 
     data = {"symbol": symbol, "contract": TOKEN_BASKET[symbol]["contract"], "as_of": latest,
