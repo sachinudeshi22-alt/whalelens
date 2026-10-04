@@ -1,0 +1,76 @@
+# Daily WhaleLens pipeline: refresh data, publish the static site.
+#
+# State lives in a SQLite database too large for git, so it's stored as an asset
+# on the "data" release: downloaded at the start, uploaded at the end (yesterday's
+# copy is kept as a backup). The site is only deployed if the pipeline succeeds.
+#
+# Required repository secrets: ETH_RPC_URL (Alchemy endpoint), BLOCKSCOUT_API_KEY.
+name: daily
+
+on:
+  schedule:
+    - cron: "30 0 * * *"      # 00:30 UTC, after the day's first block exists
+  workflow_dispatch: {}
+
+concurrency:
+  group: daily
+  cancel-in-progress: false
+
+permissions:
+  contents: write              # update the data release
+  pages: write
+  id-token: write
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+      BLOCKSCOUT_API_KEY: ${{ secrets.BLOCKSCOUT_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Download database
+        run: |
+          mkdir -p data
+          gh release download data --pattern whale_tracker.db.gz --dir data
+          gunzip data/whale_tracker.db.gz
+          ls -lh data/whale_tracker.db
+
+      - name: Run pipeline
+        id: run
+        run: python -u scripts/run_daily.py
+
+      - name: Upload database
+        if: always() && hashFiles('data/whale_tracker.db') != ''
+        run: |
+          gh release download data --pattern whale_tracker.db.gz --dir prev || true
+          [ -f prev/whale_tracker.db.gz ] && mv prev/whale_tracker.db.gz prev/whale_tracker.prev.db.gz \
+            && gh release upload data prev/whale_tracker.prev.db.gz --clobber
+          gzip -c data/whale_tracker.db > whale_tracker.db.gz
+          gh release upload data whale_tracker.db.gz --clobber
+
+      - name: Package site
+        if: steps.run.outcome == 'success'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: pipeline
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

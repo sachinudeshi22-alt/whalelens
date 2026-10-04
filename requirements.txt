@@ -1,7 +1,5 @@
+# Pipeline + site export (what GitHub Actions installs)
 requests==2.31.0
 python-dotenv==1.0.0
-streamlit==1.35.0
-plotly==5.22.0
-pandas==2.2.2
 eth-abi==5.1.0
 markdown==3.7
