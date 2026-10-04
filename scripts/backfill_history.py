@@ -95,8 +95,11 @@ def tracked_addresses(symbol: str) -> list[str]:
 
 def missing(symbol: str, date: str, addresses: list[str]) -> list[str]:
     con = get_connection()
+    # Force the (token, date) index: without it SQLite picks the (token, address, date)
+    # covering index and scans every row of the token once per date (hours on big tokens)
     done = {r[0] for r in con.execute(
-        "SELECT address FROM holdings_daily WHERE token_symbol = ? AND date = ?", (symbol, date))}
+        "SELECT address FROM holdings_daily INDEXED BY idx_holdings_daily_tok_date "
+        "WHERE token_symbol = ? AND date = ?", (symbol, date))}
     con.close()
     return [a for a in addresses if a not in done]
 
