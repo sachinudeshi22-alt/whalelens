@@ -12,6 +12,8 @@ at 10-block ranges, so it can't be used for this).
 import time
 import requests
 
+from chain import http
+
 from config import ETH_RPC_URL
 from db.schema import get_connection
 
@@ -27,7 +29,7 @@ def _call(params: dict, attempts: int = 15) -> dict:
         raise TransfersUnavailable("ETH_RPC_URL must be an Alchemy endpoint for transfer scans")
     for attempt in range(attempts):
         try:
-            resp = requests.post(ETH_RPC_URL, json={"jsonrpc": "2.0", "id": 1,
+            resp = http.post(ETH_RPC_URL, json={"jsonrpc": "2.0", "id": 1,
                                                     "method": "alchemy_getAssetTransfers",
                                                     "params": [params]}, timeout=90)
             if resp.status_code == 429:

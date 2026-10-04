@@ -9,6 +9,8 @@ bursts, so it is throttled harder.
 import time
 import requests
 
+from chain import http
+
 from config import (
     BLOCKSCOUT_API_KEY, BLOCKSCOUT_BASE_URL, BLOCKSCOUT_CREDIT_RESERVE, BLOCKSCOUT_PRO_URL,
 )
@@ -66,7 +68,7 @@ def _get(url: str, params: dict | None = None, retries: int = 6) -> dict:
     for attempt in range(retries):
         _throttle(pro)
         try:
-            resp = requests.get(url, params=params, timeout=60)
+            resp = http.get(url, params=params, timeout=60)
             if pro:
                 _track_credits(resp)
             body = resp.json() if resp.content else {}

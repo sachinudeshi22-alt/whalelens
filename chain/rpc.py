@@ -7,6 +7,8 @@ skipped contract check lets contracts leak into the cohort.
 """
 import time
 import requests
+
+from chain import http
 from eth_abi import decode, encode
 
 from config import ETH_RPC_ENDPOINTS
@@ -39,7 +41,7 @@ def _is_revert(err: dict) -> bool:
 
 
 def _post(url: str, payload: list[dict]) -> list[dict]:
-    resp = requests.post(url, json=payload, timeout=45)
+    resp = http.post(url, json=payload, timeout=45)
     resp.raise_for_status()
     body = resp.json()
     if not isinstance(body, list):
