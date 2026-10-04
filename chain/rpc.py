@@ -100,7 +100,7 @@ def _host(url: str) -> str:
     return url.split("/")[2] if "://" in url else url
 
 
-def batch(calls: list[tuple[str, list]], retries: int = 3) -> list:
+def batch(calls: list[tuple[str, list]], retries: int = 8) -> list:
     """
     Run [(method, params), ...] and return results in the same order.
     An eth_call that reverts comes back as a `Reverted` instance instead of raising.
@@ -122,7 +122,9 @@ def batch(calls: list[tuple[str, list]], retries: int = 3) -> list:
                     last_err = RpcError(f"{_host(url)}: {type(e).__name__}: {str(e).replace(url, _host(url))[:200]}")
             if done:
                 break
-            time.sleep(2 ** attempt)
+            # Back off up to a minute per round (~4 min total), so a brief network or
+            # DNS outage pauses a long job instead of killing it
+            time.sleep(min(2 ** attempt, 60))
         if not done:
             raise RpcError(f"batch at offset {start} failed on all endpoints: {last_err}")
     return results
