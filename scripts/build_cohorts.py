@@ -46,7 +46,7 @@ from db.schema import init_db, get_connection
 from chain.blockscout import metadata_labels
 from chain.classify import classify, KEEP_TYPES
 from chain.insiders import group_safes, trace_funding
-from chain.positions import POSITION_SOURCES, unseen_position_floor
+from chain.positions import POSITION_SOURCES
 from backfill_history import record_day
 from fetch_holders import _excluded_by_label
 
@@ -64,14 +64,16 @@ def build_universe(con, symbol: str) -> tuple[dict[str, dict], float, float]:
     floor_wallet = raw[-1][1]
     min_whale = con.execute("SELECT MIN(balance_at_pull) FROM holders WHERE token_symbol = ? AND category = 'whale'",
                             (symbol,)).fetchone()[0]
-    # Untracked staking participants (below the deposit floor) can hold at most this much staked
-    sent_threshold = UNIVERSE_SENT_FRACTION * min_whale + unseen_position_floor(symbol)
+    base = UNIVERSE_SENT_FRACTION * min_whale
+    # Stakers join only if their deposits could reach `base`; a staker left out holds at
+    # most unseen_above(base) staked, which joins the bound alongside the sent threshold
+    sent_threshold = base + sum(src.unseen_above(base) for src in POSITION_SOURCES.get(symbol, []))
 
     uni: dict[str, dict] = {}
     for addr, _, labels in raw:
         uni[addr] = {"why": "top holder list", "labels": json.loads(labels or "[]")}
     for source in POSITION_SOURCES.get(symbol, []):
-        for owner in source.participants():
+        for owner in source.participants(min_position=base):
             uni.setdefault(owner, {"why": f"{source.name} participant", "labels": None})
     for addr, sent in con.execute("SELECT address, sent FROM transfer_totals WHERE token_symbol = ? AND sent >= ?",
                                   (symbol, sent_threshold)):

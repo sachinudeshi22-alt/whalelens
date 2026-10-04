@@ -81,8 +81,11 @@ class LockstakePosition:
     def unseen_floor(self) -> float:
         return 0.0   # every owner that ever opened an urn is tracked
 
-    def participants(self) -> list[str]:
-        return list(self._sync_urns())
+    def participants(self, min_position: float | None = None) -> list[str]:
+        return list(self._sync_urns())   # no deposit totals for urns; all owners are cheap enough
+
+    def unseen_above(self, min_position: float) -> float:
+        return 0.0
 
     def all_positions(self, block="latest") -> dict[str, int]:
         """Raw staked amount for every owner that ever opened an urn."""
@@ -144,9 +147,20 @@ class EscrowPosition:
         """Max position (token units) of any participant we don't track."""
         return self.floor_in_deposit_units() * 1.05   # small allowance for accrued rewards
 
-    def participants(self) -> list[str]:
+    def deposit_units(self, token_amount: float) -> float:
+        """Convert a token-unit amount to the units deposits are recorded in."""
+        return token_amount
+
+    def unseen_above(self, min_position: float) -> float:
+        """Max position (token units) of a participant left out by participants(min_position)."""
+        return max(min_position, self.floor_in_deposit_units()) * 1.05   # rewards allowance
+
+    def participants(self, min_position: float | None = None) -> list[str]:
+        """Participants whose total deposits could make their position ≥ min_position (token units)."""
         self._sync()
         floor = self.floor_in_deposit_units()
+        if min_position is not None:
+            floor = max(floor, self.deposit_units(min_position))
         con = get_connection()
         rows = con.execute("SELECT address FROM position_deposits WHERE source = ? AND deposited >= ?",
                            (self.name, floor)).fetchall()
@@ -254,8 +268,14 @@ class VeBALPosition(EscrowPosition):
     def floor_in_deposit_units(self) -> float:
         return super().floor_in_deposit_units() / max(self.bal_per_bpt("latest"), 1e-9)
 
+    def deposit_units(self, token_amount: float) -> float:
+        return token_amount / max(self.bal_per_bpt("latest"), 1e-9)
+
     def unseen_floor(self) -> float:
         return super().floor_in_deposit_units() * 1.05
+
+    def unseen_above(self, min_position: float) -> float:
+        return max(min_position, super().floor_in_deposit_units()) * 1.05
 
     def read(self, addresses, block):
         res = multicall([(self.contract, "0xcbf9fe5f" + _word(a)) for a in addresses], block)
