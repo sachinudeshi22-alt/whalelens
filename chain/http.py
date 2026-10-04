@@ -5,22 +5,35 @@ requests' timeout applies between bytes, so a server that holds a connection ope
 or trickles data can block forever. Every outbound call goes through post()/get()
 here, which abandon the request after DEADLINE seconds and raise a Timeout that
 callers' existing retry logic already handles.
+
+Each request runs on its own daemon thread. (A bounded pool doesn't work: abandoned
+requests keep their worker blocked, and once every worker is stuck, new requests
+queue behind them and time out forever.)
 """
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+import threading
 
 import requests
 
 DEADLINE = 120
-_pool = ThreadPoolExecutor(max_workers=4)
 
 
 def _with_deadline(fn, *args, deadline: float = DEADLINE, **kwargs) -> requests.Response:
-    future = _pool.submit(fn, *args, **kwargs)
-    try:
-        return future.result(timeout=deadline)
-    except FutureTimeout:
-        future.cancel()
+    box: dict = {}
+
+    def run():
+        try:
+            box["result"] = fn(*args, **kwargs)
+        except BaseException as e:   # surfaced to the caller below
+            box["error"] = e
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(deadline)
+    if worker.is_alive():
         raise requests.Timeout(f"no complete response within {deadline}s")
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
 
 
 def post(url: str, **kwargs) -> requests.Response:
