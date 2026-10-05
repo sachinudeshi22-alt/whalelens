@@ -14,7 +14,7 @@ import threading
 
 import requests
 
-DEADLINE = 120
+DEADLINE = 45   # normal requests finish in <2s; a stuck one is retried sooner
 
 
 def _with_deadline(fn, *args, deadline: float = DEADLINE, **kwargs) -> requests.Response:
