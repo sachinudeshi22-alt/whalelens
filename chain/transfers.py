@@ -33,6 +33,7 @@ def _call(params: dict, attempts: int = 15) -> dict:
                                                     "method": "alchemy_getAssetTransfers",
                                                     "params": [params]}, timeout=90)
             if resp.status_code == 429:
+                print(f"    transfers: HTTP 429, backing off {0.5 * 2 ** attempt:.1f}s", flush=True)
                 time.sleep(0.5 * 2 ** attempt)
                 continue
             resp.raise_for_status()
@@ -44,7 +45,8 @@ def _call(params: dict, attempts: int = 15) -> dict:
                     continue
                 raise TransfersUnavailable(f"alchemy_getAssetTransfers: {err}")
             return body["result"]
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError) as e:
+            print(f"    transfers: {type(e).__name__}, retrying in {min(2 ** attempt, 60)}s", flush=True)
             time.sleep(min(2 ** attempt, 60))
     raise TransfersUnavailable("alchemy_getAssetTransfers kept failing")
 

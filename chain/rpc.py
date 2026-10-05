@@ -71,6 +71,7 @@ def _post_paced(url: str, payload: list[dict], attempts: int = 6) -> list[dict]:
                 continue
             raise
         if any(isinstance(i, dict) and "error" in i and _is_rate_limit(i["error"]) for i in body):
+            print(f"    rpc: {_host(url)} throughput-limited, backing off {0.5 * 2 ** attempt:.1f}s", flush=True)
             time.sleep(0.5 * 2 ** attempt)
             continue
         return body
@@ -122,10 +123,12 @@ def batch(calls: list[tuple[str, list]], retries: int = 8) -> list:
                     break
                 except (requests.RequestException, RpcError, ValueError, KeyError) as e:
                     last_err = RpcError(f"{_host(url)}: {type(e).__name__}: {str(e).replace(url, _host(url))[:200]}")
+                    print(f"    rpc: {last_err}", flush=True)
             if done:
                 break
             # Back off up to a minute per round (~4 min total), so a brief network or
             # DNS outage pauses a long job instead of killing it
+            print(f"    rpc: all endpoints failed for this chunk, retry round {attempt + 1} in {min(2 ** attempt, 60)}s", flush=True)
             time.sleep(min(2 ** attempt, 60))
         if not done:
             raise RpcError(f"batch at offset {start} failed on all endpoints: {last_err}")

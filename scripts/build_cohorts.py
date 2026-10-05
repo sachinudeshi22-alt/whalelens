@@ -80,8 +80,16 @@ def build_universe(con, symbol: str) -> tuple[dict[str, dict], float, float]:
                                   (symbol, sent_threshold)):
         uni.setdefault(addr, {"why": f"sent {sent:,.0f} in period", "labels": None})
 
+    # Reuse labels stored by earlier builds; only new addresses hit the (throttled,
+    # keyless) metadata service. Top holders' labels refresh weekly via fetch_holders.
+    stored = {a: json.loads(l) for a, l in con.execute(
+        "SELECT address, labels FROM universe WHERE token_symbol = ? AND labels IS NOT NULL", (symbol,))}
+    for a, v in uni.items():
+        if v["labels"] is None and a in stored:
+            v["labels"] = stored[a]
     unlabelled = [a for a, v in uni.items() if v["labels"] is None]
     if unlabelled:
+        print(f"  Fetching labels for {len(unlabelled):,} new addresses...", flush=True)
         labels = metadata_labels(unlabelled)
         for a in unlabelled:
             uni[a]["labels"] = labels[a]
