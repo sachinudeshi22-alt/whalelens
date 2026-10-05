@@ -6,6 +6,7 @@ Daily pipeline. Run once a day shortly after 00:00 UTC.
   3. Refresh holder lists (weekly, Mondays) fetch_holders.py
   4. Rebuild point-in-time cohorts          build_cohorts.py
   5. Export the static site                 export_site.py
+  6. Prune and compact the DB (Sundays)     prune_db.py
 
 Stops at the first failing step, so a broken step never publishes partial data;
 the previous export stays live. A lock file prevents overlapping runs.
@@ -56,6 +57,8 @@ def main():
             step("Refresh holder lists", ["scripts/fetch_holders.py"])
         step("Rebuild point-in-time cohorts", ["scripts/build_cohorts.py"])
         step("Export site", ["scripts/export_site.py"])
+        if datetime.now(timezone.utc).weekday() == 6:
+            step("Prune and compact database", ["scripts/prune_db.py"])
         print("Daily pipeline complete.")
     finally:
         LOCK.unlink(missing_ok=True)
