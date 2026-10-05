@@ -105,6 +105,9 @@ EXCLUDE_LABEL_KEYWORDS = [
 INSIDER_LABEL_KEYWORDS = [
     "treasury", "vesting", "vested", "noncirculating", "non-circulating", "foundation",
     "team", "deployer", "investor", "investors", "token manager", "multisig: team",
+    # A project's own governance multisig (e.g. "Synthetix: protocolDAO"). Not plain
+    # "DAO": another project's DAO holding this token isn't an insider for it.
+    "protocoldao",
 ]
 # Generic tags Blockscout puts on huge numbers of unrelated addresses (any address
 # that ever deployed a contract is a "Contract Deployer"). Never insider evidence;

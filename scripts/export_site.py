@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from config import TOKEN_BASKET, TOKEN_NOTES
 from db.schema import init_db, get_connection
-from chain.rpc import multicall
+from chain.rpc import batch, multicall
 
 SITE = ROOT / "site"
 TOTAL_SUPPLY = "0x18160ddd"
@@ -36,9 +36,11 @@ def supply_series(con, symbol: str) -> dict[str, float]:
     missing = [(d, b) for d, b in con.execute("SELECT date, block_number FROM daily_blocks ORDER BY date")
                if d not in have]
     token = TOKEN_BASKET[symbol]
-    for d, b in missing:
-        ret = multicall([(token["contract"], TOTAL_SUPPLY)], b)[0]
-        have[d] = int.from_bytes(ret[:32], "big") / 10 ** token["decimals"]
+    # One JSON-RPC batch for all missing days (each day needs its own block, so this
+    # can't be one multicall); a first export used to take ~370 round trips per token
+    res = batch([("eth_call", [{"to": token["contract"], "data": TOTAL_SUPPLY}, hex(b)]) for _, b in missing])
+    for (d, _), r in zip(missing, res):
+        have[d] = int(r, 16) / 10 ** token["decimals"]
         con.execute("INSERT OR REPLACE INTO supply_daily (token_symbol, date, supply) VALUES (?,?,?)",
                     (symbol, d, have[d]))
     con.commit()
