@@ -164,13 +164,49 @@ def asset_version() -> str:
     return h.hexdigest()[:10]
 
 
+SITE_URL = "https://sachinudeshi22-alt.github.io/whalelens/"
+DESCRIPTION = ("What the biggest independent holders and the insiders of 13 DeFi tokens are actually "
+               "doing, verified on-chain, with staking counted and exchanges removed.")
+FOOTER = """<footer>
+    <div class="wrap">
+      <p>Holdings are read directly from Ethereum at the first block of each UTC day. Address labels come from
+        <a href="https://eth.blockscout.com" rel="noopener">Blockscout</a> and the
+        <a href="https://www.openlabelsinitiative.org" rel="noopener">Open Labels Initiative</a>.
+        See the <a href="methodology.html">methodology</a> for every rule and known limitation.</p>
+      <p>Not financial advice. Wallet classifications are evidence-based but can be wrong. Ethereum mainnet only.</p>
+      <p>Built by <a href="https://github.com/sachinudeshi22-alt" rel="noopener">Sachin Udeshi</a> ·
+        <a href="https://github.com/sachinudeshi22-alt/whalelens" rel="noopener">Source on GitHub</a></p>
+    </div>
+  </footer>"""
+
+# (output file, markdown source, title, description)
+PAGES = [
+    ("about.html", "ABOUT.md", "About",
+     "What WhaleLens has found, what makes it different from a top-holder list, and how it's built."),
+    ("methodology.html", "METHODOLOGY.md", "Methodology",
+     "Every rule WhaleLens uses to verify holdings, remove exchanges, identify insiders and avoid look-ahead bias."),
+]
+
+
+def _fill(html: str, **values) -> str:
+    for k, v in values.items():
+        html = html.replace("{{" + k + "}}", v)
+    return html
+
+
 def export_pages() -> None:
     v = asset_version()
+    common = {"V": v, "SITE_URL": SITE_URL, "FOOTER": FOOTER}
     index = (SITE / "index.template.html").read_text()
-    (SITE / "index.html").write_text(index.replace("{{V}}", v))
-    body = markdown.markdown((ROOT / "docs" / "METHODOLOGY.md").read_text(), extensions=["tables"])
-    template = (SITE / "methodology.template.html").read_text()
-    (SITE / "methodology.html").write_text(template.replace("<!--BODY-->", body).replace("{{V}}", v))
+    (SITE / "index.html").write_text(_fill(index, DESCRIPTION=DESCRIPTION, **common))
+    template = (SITE / "page.template.html").read_text()
+    for out, source, title, description in PAGES:
+        body = markdown.markdown((ROOT / "docs" / source).read_text(), extensions=["tables"])
+        current = {f"CURRENT_{p[0].split('.')[0]}": (' aria-current="page"' if p[0] == out else "")
+                   for p in PAGES}
+        html = _fill(template.replace("<!--BODY-->", body), TITLE=title, DESCRIPTION=description,
+                     PAGE=out, **current, **common)
+        (SITE / out).write_text(html)
 
 
 def main():

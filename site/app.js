@@ -360,6 +360,32 @@
   }
 
   // ---------- pages ----------
+  // Three cards computed from today's data, so they never go stale
+  function highlights(tokens) {
+    const withW = tokens.filter((t) => t.stats.whales_30d);
+    if (!withW.length) return null;
+    const net = (t) => t.stats.whales_30d.up - t.stats.whales_30d.down;
+    const insiders = tokens.filter((t) => t.stats.insider_share)
+      .sort((a, b) => b.stats.insider_share - a.stats.insider_share)[0];
+    const selling = withW.slice().sort((a, b) => net(a) - net(b))[0];
+    const adding = withW.slice().sort((a, b) => net(b) - net(a))[0];
+    const card = (t, label, value, foot) => el("a", { class: "tile tile-link", href: `#/t/${t.symbol}` },
+      el("div", { class: "label", text: label }),
+      el("div", { class: "value", text: value }),
+      el("div", { class: "foot", text: foot }));
+    const cards = [];
+    if (insiders) cards.push(card(insiders, "Largest insider share",
+      `${insiders.symbol} · ${pct(insiders.stats.insider_share)}`,
+      "of supply held by team, investor and treasury wallets"));
+    if (net(selling) < 0) cards.push(card(selling, "Most whales reducing, 30d",
+      `${selling.symbol} · ${selling.stats.whales_30d.down} of 50`,
+      `reduced holdings; ${selling.stats.whales_30d.up} added`));
+    if (net(adding) > 0) cards.push(card(adding, "Most whales adding, 30d",
+      `${adding.symbol} · ${adding.stats.whales_30d.up} of 50`,
+      `added to holdings; ${adding.stats.whales_30d.down} reduced`));
+    return cards.length ? el("div", { class: "tiles highlights" }, cards) : null;
+  }
+
   async function overview() {
     document.getElementById("nav-overview").setAttribute("aria-current", "page");
     const data = await load("data/overview.json");
@@ -379,11 +405,13 @@
         el("td", { class: "num" }, ic ? deltaCell(ic.pct) : el("span", { class: "na", text: "—" })));
     });
     show(
-      el("h1", { text: "What the biggest holders are doing" }),
-      el("p", { class: "lede", text:
-        "Whales are each day's 50 largest independent wallets, with staked tokens counted and exchanges removed. " +
-        "Insiders (team, investor and treasury wallets) are tracked separately. Changes follow the wallets that " +
-        "were whales at the start of the window, so a wallet that sold out still counts against the group." }),
+      el("h1", { text: "What the biggest holders are actually doing" }),
+      el("p", { class: "lede" },
+        "WhaleLens follows the 50 largest independent wallets of 13 DeFi tokens, and separately each project's " +
+        "insiders, using balances read straight from Ethereum. Staked tokens count, exchanges are removed, and " +
+        "changes follow the wallets that were whales at the start of each window. ",
+        el("a", { href: "about.html", text: "What it has found →" })),
+      highlights(data.tokens),
       windowFilter(route),
       el("section", { class: "card" },
         el("div", { class: "table-scroll" }, el("table", {},

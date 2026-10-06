@@ -3,40 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WhaleLens</title>
+  <title>{{TITLE}} · WhaleLens</title>
   <meta name="description" content="{{DESCRIPTION}}">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <meta property="og:type" content="website">
+  <meta property="og:type" content="article">
   <meta property="og:site_name" content="WhaleLens">
-  <meta property="og:title" content="WhaleLens">
+  <meta property="og:title" content="{{TITLE}} · WhaleLens">
   <meta property="og:description" content="{{DESCRIPTION}}">
-  <meta property="og:url" content="{{SITE_URL}}">
+  <meta property="og:url" content="{{SITE_URL}}{{PAGE}}">
   <meta property="og:image" content="{{SITE_URL}}og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:image" content="{{SITE_URL}}og.png">
   <link rel="stylesheet" href="style.css?v={{V}}">
+  <script>
+    try { var t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+  </script>
 </head>
 <body>
   <header class="top">
     <div class="wrap">
-      <a class="brand" href="#/">WhaleLens</a>
+      <a class="brand" href="index.html#/">WhaleLens</a>
       <nav class="main" aria-label="Main">
-        <a href="#/" id="nav-overview">Overview</a>
-        <a href="about.html">About</a>
-        <a href="methodology.html">Methodology</a>
+        <a href="index.html#/">Overview</a>
+        <a href="about.html"{{CURRENT_about}}>About</a>
+        <a href="methodology.html"{{CURRENT_methodology}}>Methodology</a>
       </nav>
-      <button class="theme-btn" id="theme-btn" type="button" aria-label="Toggle dark mode">Theme</button>
     </div>
   </header>
-
-  <main class="wrap" id="app" aria-live="polite">
-    <p class="sub">Loading…</p>
+  <main class="wrap prose">
+<!--BODY-->
   </main>
-
   {{FOOTER}}
-
-  <script src="app.js?v={{V}}"></script>
 </body>
 </html>

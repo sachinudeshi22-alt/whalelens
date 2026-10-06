@@ -185,5 +185,20 @@ footer p { margin: 4px 0; max-width: 80ch; }
   h1 { font-size: 22px; }
   .hero .value { font-size: 44px; }
   .hide-sm { display: none; }
-  header.top .wrap { gap: 12px; }
+  header.top .wrap { gap: 10px; }
+  nav.main { gap: 12px; }
+  nav.main a { font-size: 13px; }
+  .brand { font-size: 16px; }
+  .theme-btn { padding: 4px 8px; font-size: 0; }
+  .theme-btn::before { content: "◐"; font-size: 15px; }
 }
+
+/* overview highlight cards */
+.highlights { margin-top: -6px; }
+a.tile-link { text-decoration: none; color: inherit; display: block; }
+a.tile-link:hover { border-color: var(--axis); }
+a.tile-link .value { font-size: 20px; }
+
+/* about page */
+.prose ul li { margin: 10px 0; }
+.prose ul li strong { color: var(--ink); }
